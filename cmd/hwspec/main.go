@@ -27,7 +27,7 @@ const usage = `hwspec captures this machine's hardware specification.
 Usage:
   hwspec capture [-o FILE] [-f json|yaml|text] [--full] [--redact]
   hwspec show FILE [-o FILE] [-f text|json|yaml]
-  hwspec ids [lookup KIND ID | template]
+  hwspec ids [update [--check] | lookup KIND ID | template]
   hwspec version
 
 capture:
@@ -44,8 +44,10 @@ show:
   -f json/yaml it re-exports the capture with the refreshed names.
 
 ids:
-  Without arguments, lists the ID databases and where their entries come
-  from. "lookup" resolves one ID, e.g. "hwspec ids lookup pci 8086:3e92",
+  Without arguments, lists the ID databases and where their names come
+  from. "update" downloads the latest signed databases (--check only
+  reports what would change; HWSPEC_IDS_URL or --url sets a mirror).
+  "lookup" resolves one ID, e.g. "hwspec ids lookup pci 8086:3e92" or
   "hwspec ids lookup jedec F785". "template" prints a commented overrides
   file to start from.
 

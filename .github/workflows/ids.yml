@@ -1,0 +1,77 @@
+name: ID databases
+
+# Rebuilds the hardware ID database bundle from upstream every week and
+# publishes it, signed, as the `ids-latest` release that `hwspec ids update`
+# downloads. Each published bundle is also kept as a dated release.
+
+on:
+  schedule:
+    - cron: "23 4 * * 1" # Mondays 04:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: ids
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUNDLE: build/ids-bundle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Fetch upstream sources
+        run: make fetch-ids
+
+      - name: Previous manifest
+        run: |
+          mkdir -p build
+          gh release download ids-latest -p manifest.json -O build/prev-manifest.json \
+            || echo "No previous bundle; publishing the first one."
+
+      - name: Build and validate bundle
+        run: make gen-ids DIR=$BUNDLE PREV=build/prev-manifest.json
+
+      - name: Skip if nothing changed
+        id: diff
+        run: |
+          new=$(jq -S '.files | map_values(.sha256)' $BUNDLE/manifest.json)
+          old=$(jq -S '.files | map_values(.sha256)' build/prev-manifest.json 2>/dev/null || echo null)
+          if [ "$new" = "$old" ]; then
+            echo "Upstream unchanged since the last bundle."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          HWSPEC_IDS_SIGNING_KEY: ${{ secrets.HWSPEC_IDS_SIGNING_KEY }}
+        run: go run ./tools/genids sign $BUNDLE/manifest.json
+
+      - name: Publish
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          date=$(date -u +%Y.%m.%d)
+          notes="Hardware ID databases built from upstream on $date. Installed by \`hwspec ids update\`; see manifest.json for per-database dates and counts."
+          files=$(ls $BUNDLE/*.ids.gz)
+
+          # Dated copy, kept for history and rollback.
+          gh release view "ids-$date" >/dev/null 2>&1 \
+            || gh release create "ids-$date" $files $BUNDLE/manifest.json $BUNDLE/manifest.json.sig \
+                 --title "ID databases $date" --notes "$notes" --latest=false
+
+          # The moving release clients read. Data first, manifest last, so a
+          # client never sees a manifest describing files not yet uploaded.
+          gh release view ids-latest >/dev/null 2>&1 \
+            || gh release create ids-latest --title "ID databases (latest)" \
+                 --notes "Always the newest bundle; see the dated ids-* releases for history." --latest=false
+          gh release upload ids-latest $files --clobber
+          gh release upload ids-latest $BUNDLE/manifest.json.sig $BUNDLE/manifest.json --clobber

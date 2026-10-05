@@ -1,15 +1,18 @@
 // Package ids resolves hardware IDs (PCI, USB, monitor vendors, MAC
 // prefixes, memory manufacturers, AMD GPU names) to names, entirely offline.
 //
-// Each database is assembled from layers, later layers overriding earlier:
+// Each database has up to three sources, and the newest one is used:
 //
-//  1. the copy embedded in the binary (always present)
-//  2. the distro's copy, e.g. /usr/share/hwdata/pci.ids, which replaces the
-//     embedded copy unless the embedded one carries a newer date (then the
-//     distro's is applied first and the embedded on top)
-//  3. a synced copy in $XDG_DATA_HOME/hwspec/ids/ (written by a future
-//     `hwspec update-ids`)
-//  4. the user's corrections in $XDG_CONFIG_HOME/hwspec/overrides.ids
+//   - the copy embedded in the binary (always present)
+//   - the distro's copy, e.g. /usr/share/hwdata/pci.ids
+//   - a synced copy in $XDG_DATA_HOME/hwspec/ids/, written by
+//     `hwspec ids update`
+//
+// "Newest" compares the date in the embedded and synced manifests, the
+// file's own "Version"/"Date" header, or, for distro files without one,
+// the file's modification time. If the newest source can't be read, the
+// next newest is used. The user's corrections in
+// $XDG_CONFIG_HOME/hwspec/overrides.ids are then applied on top.
 package ids
 
 import (
@@ -17,16 +20,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"embed"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
 
-//go:embed data/*.ids.gz
+//go:embed data/*.ids.gz data/manifest.json
 var embedded embed.FS
 
 // Kind identifies one ID database.
@@ -93,11 +98,12 @@ func xdgPath(env, fallback, rel string) string {
 // OverridesPath is where user corrections are read from.
 func OverridesPath() string { return overridesPath }
 
-// Layer describes one source that contributed to a database.
+// Layer describes a source that was used for a database (or tried and
+// failed, in which case Err is set).
 type Layer struct {
 	Source  string // "embedded" or a file path
-	Date    string // from the file's header, "" if it has none
-	Entries int    // entries this layer added or replaced
+	Date    string // how current the source is, "" if unknown
+	Entries int    // names this layer contributed
 	Err     string
 }
 
@@ -139,67 +145,60 @@ type source struct {
 	date string
 }
 
-func newSource(name string, open func() (io.ReadCloser, error)) source {
-	return source{name: name, open: open, date: sourceDate(open)}
-}
-
 func load(k Kind) *db {
 	s := specs[k]
 	d := &db{names: map[string]string{}}
 
-	emb := newSource("embedded", func() (io.ReadCloser, error) {
+	// Candidates in tie-break order: on equal dates the earlier one wins.
+	var cands []source
+	if syncedDir != "" {
+		path := filepath.Join(syncedDir, s.file+".gz")
+		if _, err := os.Stat(path); err == nil {
+			cands = append(cands, source{path, fileOpener(path), manifestDate(syncedManifest(), s.file)})
+		}
+	}
+	if systemEnabled {
+		for _, path := range s.system {
+			st, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			src := source{name: path, open: fileOpener(path)}
+			if src.date = sourceDate(src.open); src.date == "" {
+				src.date = st.ModTime().UTC().Format("2006-01-02")
+			}
+			cands = append(cands, src)
+			break
+		}
+	}
+	cands = append(cands, source{"embedded", func() (io.ReadCloser, error) {
 		raw, err := embedded.ReadFile("data/" + s.file + ".gz")
 		if err != nil {
 			return nil, err
 		}
 		return gzip.NewReader(bytes.NewReader(raw))
-	})
-	layers := []source{emb}
+	}, manifestDate(embeddedManifest(), s.file)})
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].date > cands[j].date })
 
-	if systemEnabled {
-		for _, path := range s.system {
-			if _, err := os.Stat(path); err != nil {
-				continue
-			}
-			sys := newSource(path, fileOpener(path))
-			// The distro's copy replaces the embedded one, unless the
-			// embedded one is provably newer; then both are applied, the
-			// embedded last, so its new and corrected names win while the
-			// distro's still fills any gaps. (Parsing both every time would
-			// cost ~40 ms per database for nothing in the common case.)
-			if emb.date != "" && sys.date != "" && emb.date > sys.date {
-				layers = []source{sys, emb}
-			} else {
-				layers = []source{sys}
-			}
-			break
-		}
-	}
-	if syncedDir != "" {
-		path := filepath.Join(syncedDir, s.file)
-		if _, err := os.Stat(path); err == nil {
-			layers = append(layers, newSource(path, fileOpener(path)))
-		}
-	}
-
-	for _, src := range layers {
+	for _, src := range cands {
 		layer := Layer{Source: src.name, Date: src.date}
-		m := map[string]string{}
 		r, err := src.open()
 		if err == nil {
-			err = s.parse(r, m)
+			err = s.parse(r, d.names)
 			r.Close()
+		}
+		if err == nil && len(d.names) == 0 {
+			err = errors.New("no entries")
 		}
 		if err != nil {
 			layer.Err = err.Error()
+			d.names = map[string]string{}
+			d.layers = append(d.layers, layer)
+			continue // fall back to the next newest
 		}
-		for key, name := range m {
-			if d.names[key] != name {
-				d.names[key] = name
-				layer.Entries++
-			}
-		}
+		layer.Entries = len(d.names)
 		d.layers = append(d.layers, layer)
+		break
 	}
 
 	// Bad lines in the overrides file are reported on every database's
@@ -216,6 +215,37 @@ func load(k Kind) *db {
 		d.layers = append(d.layers, layer)
 	}
 	return d
+}
+
+var (
+	embManifestOnce sync.Once
+	embManifest     *Manifest
+)
+
+func embeddedManifest() *Manifest {
+	embManifestOnce.Do(func() {
+		if b, err := embedded.ReadFile("data/manifest.json"); err == nil {
+			embManifest, _ = ParseManifest(b)
+		}
+	})
+	return embManifest
+}
+
+// syncedManifest reads the manifest saved by the last `hwspec ids update`.
+func syncedManifest() *Manifest {
+	b, err := os.ReadFile(filepath.Join(syncedDir, "manifest.json"))
+	if err != nil {
+		return nil
+	}
+	m, _ := ParseManifest(b)
+	return m
+}
+
+func manifestDate(m *Manifest, file string) string {
+	if m == nil {
+		return ""
+	}
+	return m.Files[file+".gz"].Date
 }
 
 func fileOpener(path string) func() (io.ReadCloser, error) {

@@ -97,14 +97,28 @@ Captures store raw IDs, and names come from these databases:
 | `jedec` | Memory makers (JEP106), including codes like `80CE` or HP's `Unknown - [0xF785]` | [i2c-tools](https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git) `decode-dimms` | GPL-2.0-or-later |
 | `amdgpu` | AMD GPU retail names by device and revision | [libdrm](https://gitlab.freedesktop.org/mesa/drm) | MIT |
 
-Each database is built from layers, later ones winning:
+Each database can come from three places, and hwspec uses the **newest**:
 
-1. **Embedded** in the binary, so lookups always work offline.
-2. **Your distro's copy** (`/usr/share/hwdata`, `/usr/share/libdrm`, …). It replaces the embedded copy unless the embedded one is dated newer, in which case the distro's copy is applied first and the embedded one on top.
-3. **Synced** copies in `~/.local/share/hwspec/ids/`.
-4. **Your overrides** in `~/.config/hwspec/overrides.ids`.
+- **Embedded** in the binary, so lookups always work offline.
+- **Your distro's copy** (`/usr/share/hwdata`, `/usr/share/libdrm`, …), dated by its version header or, failing that, the file's date.
+- **Synced** with `hwspec ids update`, into `~/.local/share/hwspec/ids/`.
 
-`hwspec ids` shows the layers in use and how many names each contributed.
+If the newest copy is unreadable, the next newest is used. Your overrides (below) are applied on top. `hwspec ids` shows what's in use.
+
+### Keeping the databases current
+
+```sh
+hwspec ids update --check   # what would change
+hwspec ids update           # install the latest databases (~1 MB)
+```
+
+A [weekly workflow](.github/workflows/ids.yml) rebuilds all six databases from upstream, checks each one parses into a plausible number of entries, and publishes them as the [`ids-latest`](https://github.com/jiegui2025/hwspec/releases/tag/ids-latest) release, with a manifest signed by an ed25519 key. `hwspec ids update`:
+
+- checks the manifest's signature against the public key built into hwspec, and refuses a bundle older than the one already installed;
+- downloads only the databases that changed, and verifies each one's size, SHA-256 and contents before installing anything;
+- installs files atomically, so an interrupted update leaves the previous databases working.
+
+Nothing is sent except the HTTP request itself, and captures never touch the network. Set `HWSPEC_IDS_URL` (or `--url`) to use a mirror of the release files.
 
 ### Correcting a name
 

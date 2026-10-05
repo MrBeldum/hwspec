@@ -6,7 +6,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # including NixOS and musl-based ones.
 export CGO_ENABLED = 0
 
-.PHONY: build test release install update-ids clean
+.PHONY: build test release install fetch-ids gen-ids update-ids clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o build/hwspec ./cmd/hwspec
@@ -26,22 +26,33 @@ release:
 install: build
 	install -Dm755 build/hwspec $(DESTDIR)$(PREFIX)/bin/hwspec
 
-# Refresh the embedded ID databases from upstream.
-IDS_TMP := build/ids-src
-update-ids:
-	mkdir -p $(IDS_TMP)
-	curl -fsSL -o $(IDS_TMP)/pci.ids https://pci-ids.ucw.cz/v2.2/pci.ids
-	curl -fsSL -o $(IDS_TMP)/usb.ids http://www.linux-usb.org/usb.ids
-	curl -fsSL -o $(IDS_TMP)/pnp.ids https://raw.githubusercontent.com/vcrhonek/hwdata/master/pnp.ids
-	curl -fsSL -o $(IDS_TMP)/oui.txt https://standards-oui.ieee.org/oui/oui.txt
-	curl -fsSL -o $(IDS_TMP)/decode-dimms https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/plain/eeprom/decode-dimms
-	curl -fsSL -o $(IDS_TMP)/amdgpu.ids https://gitlab.freedesktop.org/mesa/drm/-/raw/main/data/amdgpu.ids
-	go run ./tools/genids gzip  $(IDS_TMP)/pci.ids      internal/ids/data/pci.ids.gz
-	go run ./tools/genids gzip  $(IDS_TMP)/usb.ids      internal/ids/data/usb.ids.gz
-	go run ./tools/genids gzip  $(IDS_TMP)/pnp.ids      internal/ids/data/pnp.ids.gz
-	go run ./tools/genids gzip  $(IDS_TMP)/amdgpu.ids   internal/ids/data/amdgpu.ids.gz
-	go run ./tools/genids oui   $(IDS_TMP)/oui.txt      internal/ids/data/oui.ids.gz
-	go run ./tools/genids jedec $(IDS_TMP)/decode-dimms internal/ids/data/jedec.ids.gz
+# ID databases. fetch-ids downloads upstream sources; gen-ids converts them
+# into DIR with a manifest (PREV keeps dates for unchanged undated files).
+IDS_SRC := build/ids-src
+DIR     ?= internal/ids/data
+PREV    ?= $(DIR)/manifest.json
+
+fetch-ids:
+	mkdir -p $(IDS_SRC)
+	curl -fsSL --retry 3 -o $(IDS_SRC)/pci.ids https://pci-ids.ucw.cz/v2.2/pci.ids
+	curl -fsSL --retry 3 -o $(IDS_SRC)/usb.ids http://www.linux-usb.org/usb.ids
+	curl -fsSL --retry 3 -o $(IDS_SRC)/pnp.ids https://raw.githubusercontent.com/vcrhonek/hwdata/master/pnp.ids
+	curl -fsSL --retry 3 -o $(IDS_SRC)/oui.txt https://standards-oui.ieee.org/oui/oui.txt
+	curl -fsSL --retry 3 -o $(IDS_SRC)/decode-dimms https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/plain/eeprom/decode-dimms
+	curl -fsSL --retry 3 -o $(IDS_SRC)/amdgpu.ids https://gitlab.freedesktop.org/mesa/drm/-/raw/main/data/amdgpu.ids
+
+gen-ids:
+	mkdir -p $(DIR)
+	go run ./tools/genids gzip  $(IDS_SRC)/pci.ids      $(DIR)/pci.ids.gz
+	go run ./tools/genids gzip  $(IDS_SRC)/usb.ids      $(DIR)/usb.ids.gz
+	go run ./tools/genids gzip  $(IDS_SRC)/pnp.ids      $(DIR)/pnp.ids.gz
+	go run ./tools/genids gzip  $(IDS_SRC)/amdgpu.ids   $(DIR)/amdgpu.ids.gz
+	go run ./tools/genids oui   $(IDS_SRC)/oui.txt      $(DIR)/oui.ids.gz
+	go run ./tools/genids jedec $(IDS_SRC)/decode-dimms $(DIR)/jedec.ids.gz
+	go run ./tools/genids manifest $(DIR) $(PREV)
+
+# Refresh the copies embedded in the binary.
+update-ids: fetch-ids gen-ids
 	go test ./internal/ids/
 
 clean:

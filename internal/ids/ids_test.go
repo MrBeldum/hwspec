@@ -1,10 +1,13 @@
 package ids
 
 import (
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // isolate makes lookups use only the embedded data (as on NixOS, which has
@@ -142,7 +145,7 @@ pci = missing key
 
 func first(name, _ string, _ bool) string { return name }
 
-func TestLayerOrder(t *testing.T) {
+func TestNewestSourceWins(t *testing.T) {
 	isolate(t)
 	dir := t.TempDir()
 	systemEnabled = true
@@ -151,33 +154,66 @@ func TestLayerOrder(t *testing.T) {
 	s.system = []string{sys}
 	specs[PCI] = s
 
-	// An older distro file must not override newer embedded names...
-	write(t, sys, "#\tVersion: 2000.01.01\n8086  Old Intel\nffe0  Only In System\n")
+	// An older distro file is ignored in favour of the newer embedded one.
+	write(t, sys, "#\tVersion: 2000.01.01\n8086  Old Intel\n")
 	Reset()
 	if got := PCIVendor("8086"); got != "Intel Corporation" {
 		t.Errorf("older system file won: %q", got)
 	}
-	if got := PCIVendor("ffe0"); got != "Only In System" {
-		t.Errorf("older system file's extra entry lost: %q", got)
-	}
-	if l := Layers(PCI); l[0].Source != sys || l[1].Source != "embedded" {
-		t.Errorf("layers = %+v, want system then embedded", l)
+	if l := Layers(PCI); len(l) != 1 || l[0].Source != "embedded" {
+		t.Errorf("layers = %+v, want embedded only", l)
 	}
 
-	// ...but a newer one does.
+	// A newer one replaces it.
 	write(t, sys, "#\tVersion: 2999.01.01\n8086  New Intel\n")
 	Reset()
 	if got := PCIVendor("8086"); got != "New Intel" {
 		t.Errorf("newer system file lost: %q", got)
 	}
 
-	// A synced copy applies over both.
-	syncedDir = filepath.Join(dir, "synced")
-	write(t, filepath.Join(syncedDir, "pci.ids"), "8086  Synced Intel\n")
-	Reset()
-	if got := PCIVendor("8086"); got != "Synced Intel" {
-		t.Errorf("synced file lost: %q", got)
+	// A distro file without a date header is dated by its mtime.
+	write(t, sys, "8086  Undated Intel\n")
+	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(sys, old, old); err != nil {
+		t.Fatal(err)
 	}
+	Reset()
+	if got := PCIVendor("8086"); got != "Intel Corporation" {
+		t.Errorf("old undated system file won: %q", got)
+	}
+
+	// A synced copy is dated by its manifest; a stale one loses to a newer
+	// distro file, a fresh one wins.
+	write(t, sys, "#\tVersion: 2500.01.01\n8086  Distro Intel\n")
+	syncedDir = filepath.Join(dir, "synced")
+	writeGz(t, filepath.Join(syncedDir, "pci.ids.gz"), "8086  Synced Intel\n")
+	for date, want := range map[string]string{"2400-01-01": "Distro Intel", "2600-01-01": "Synced Intel"} {
+		write(t, filepath.Join(syncedDir, "manifest.json"),
+			`{"format":1,"generated_at":"2026-01-01T00:00:00Z","files":{"pci.ids.gz":{"date":"`+date+`"}}}`)
+		Reset()
+		if got := PCIVendor("8086"); got != want {
+			t.Errorf("synced dated %s: got %q, want %q", date, got, want)
+		}
+	}
+
+	// An unreadable newest source falls back to the next newest.
+	write(t, filepath.Join(syncedDir, "pci.ids.gz"), "not gzip")
+	Reset()
+	if got := PCIVendor("8086"); got != "Distro Intel" {
+		t.Errorf("no fallback from a broken synced file: %q", got)
+	}
+	if l := Layers(PCI); len(l) != 2 || l[0].Err == "" {
+		t.Errorf("layers = %+v, want the failed synced file then the distro file", l)
+	}
+}
+
+func writeGz(t *testing.T, path, content string) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write([]byte(content))
+	zw.Close()
+	write(t, path, buf.String())
 }
 
 func TestLookup(t *testing.T) {

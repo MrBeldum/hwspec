@@ -74,7 +74,11 @@ func (b *bundle) publish(at time.Time, key ed25519.PrivateKey) {
 
 func (b *bundle) update(opt UpdateOptions) ([]FileUpdate, error) {
 	opt.BaseURL = b.url
-	return Update(context.Background(), opt)
+	res, err := Update(context.Background(), opt)
+	if res == nil {
+		return nil, err
+	}
+	return res.Files, err
 }
 
 func statuses(res []FileUpdate) string {

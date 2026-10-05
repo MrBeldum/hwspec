@@ -48,7 +48,17 @@ const (
 // Update downloads the signed bundle manifest, verifies it, then fetches
 // and verifies each database that differs from the synced copy. Nothing is
 // written unless every changed file passes its checks.
-func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
+// ErrBuiltInIsNewer means the published bundle is older than the
+// databases built into this hwspec: there is nothing newer to install.
+var ErrBuiltInIsNewer = errors.New("the databases built into hwspec are newer than the published bundle")
+
+// UpdateResult describes an update (or, with DryRun, what it would do).
+type UpdateResult struct {
+	Files    []FileUpdate
+	BundleAt time.Time // when the published bundle was built
+}
+
+func Update(ctx context.Context, opt UpdateOptions) (*UpdateResult, error) {
 	if syncedDir == "" {
 		return nil, errors.New("no home directory to store synced databases in")
 	}
@@ -112,8 +122,7 @@ func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
 				remote.GeneratedAt.Format(time.RFC3339), local.GeneratedAt.Format(time.RFC3339))
 		}
 		if emb := embeddedManifest(); emb != nil && remote.GeneratedAt.Before(emb.GeneratedAt) {
-			return nil, fmt.Errorf("published bundle (%s) is older than the databases built into hwspec (%s); nothing to update",
-				remote.GeneratedAt.Format(time.RFC3339), emb.GeneratedAt.Format(time.RFC3339))
+			return &UpdateResult{BundleAt: remote.GeneratedAt}, ErrBuiltInIsNewer
 		}
 	}
 
@@ -166,7 +175,7 @@ func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
 		downloads[name] = gz
 	}
 	if opt.DryRun {
-		return results, nil
+		return &UpdateResult{Files: results, BundleAt: remote.GeneratedAt}, nil
 	}
 
 	// Every file checked out; install them, the manifest last, so a crash
@@ -200,7 +209,7 @@ func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
 		return nil, err
 	}
 	Reset()
-	return results, nil
+	return &UpdateResult{Files: results, BundleAt: remote.GeneratedAt}, nil
 }
 
 // InstallError is returned when installing failed after verification, so

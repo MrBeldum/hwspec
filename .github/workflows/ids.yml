@@ -41,10 +41,18 @@ jobs:
         run: make fetch-ids
 
       - name: Previous manifest
+        # Fail closed: only a confirmed "no such release" means first publish.
+        # Any other error (API outage, rate limit) must not skip the
+        # comparison with the previous bundle.
         run: |
           mkdir -p build
-          gh release download ids-latest -p manifest.json -O build/prev-manifest.json \
-            || echo "No previous bundle; publishing the first one."
+          if out=$(gh release view ids-latest --json tagName 2>&1); then
+            gh release download ids-latest -p manifest.json -O build/prev-manifest.json
+          elif grep -q "release not found" <<<"$out"; then
+            echo "No previous bundle; publishing the first one."
+          else
+            echo "::error::Can't check the previous bundle: $out"; exit 1
+          fi
 
       - name: Build, validate and compare with the previous bundle
         run: make gen-ids DIR=$BUNDLE PREV=build/prev-manifest.json
@@ -89,8 +97,22 @@ jobs:
           name: ids-bundle
           path: build/ids-bundle
 
+      - name: Previous manifest (again, independently of the build job)
+        # Fail closed: only a confirmed "no such release" means first publish.
+        # Any other error (API outage, rate limit) must not skip the
+        # comparison with the previous bundle.
+        run: |
+          mkdir -p build
+          if out=$(gh release view ids-latest --json tagName 2>&1); then
+            gh release download ids-latest -p manifest.json -O build/prev-manifest.json
+          elif grep -q "release not found" <<<"$out"; then
+            echo "No previous bundle; publishing the first one."
+          else
+            echo "::error::Can't check the previous bundle: $out"; exit 1
+          fi
+
       - name: Re-verify the bundle before signing
-        run: go run ./tools/genids verify $BUNDLE
+        run: go run ./tools/genids verify $BUNDLE build/prev-manifest.json
 
       - name: Sign
         env:

@@ -1,0 +1,474 @@
+// Package ids resolves hardware IDs (PCI, USB, monitor vendors, MAC
+// prefixes, memory manufacturers, AMD GPU names) to names, entirely offline.
+//
+// Each database is assembled from layers, later layers overriding earlier:
+//
+//  1. the copy embedded in the binary (always present)
+//  2. the distro's copy, e.g. /usr/share/hwdata/pci.ids, which replaces the
+//     embedded copy unless the embedded one carries a newer date (then the
+//     distro's is applied first and the embedded on top)
+//  3. a synced copy in $XDG_DATA_HOME/hwspec/ids/ (written by a future
+//     `hwspec update-ids`)
+//  4. the user's corrections in $XDG_CONFIG_HOME/hwspec/overrides.ids
+package ids
+
+import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"embed"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+)
+
+//go:embed data/*.ids.gz
+var embedded embed.FS
+
+// Kind identifies one ID database.
+type Kind string
+
+const (
+	PCI    Kind = "pci"
+	USB    Kind = "usb"
+	PNP    Kind = "pnp"
+	OUI    Kind = "oui"
+	JEDEC  Kind = "jedec"
+	AMDGPU Kind = "amdgpu"
+)
+
+var Kinds = []Kind{PCI, USB, PNP, OUI, JEDEC, AMDGPU}
+
+type spec struct {
+	file   string   // embedded and synced file name
+	system []string // distro locations, first found is used
+	parse  func(r io.Reader, m map[string]string) error
+}
+
+var specs = map[Kind]spec{
+	PCI: {"pci.ids", hwdata("pci.ids"), parsePCIStyle},
+	USB: {"usb.ids", hwdata("usb.ids"), parsePCIStyle},
+	PNP: {"pnp.ids", hwdata("pnp.ids"), parseTabbed},
+	OUI: {"oui.ids", append(hwdata("oui.txt"), "/usr/share/ieee-data/oui.txt"), parseOUI},
+	// No distro ships this as a data file; decode-dimms has it in Perl code.
+	JEDEC: {"jedec.ids", nil, parseJEDEC},
+	AMDGPU: {"amdgpu.ids", []string{
+		"/usr/share/libdrm/amdgpu.ids",
+		"/run/current-system/sw/share/libdrm/amdgpu.ids",
+	}, parseAMDGPU},
+}
+
+func hwdata(name string) []string {
+	return []string{
+		"/usr/share/hwdata/" + name,
+		"/usr/share/misc/" + name,
+		"/usr/share/" + name,
+		"/run/current-system/sw/share/hwdata/" + name, // NixOS
+	}
+}
+
+// These are variables so tests can redirect them.
+var (
+	systemEnabled = true
+	syncedDir     = xdgPath("XDG_DATA_HOME", ".local/share", "hwspec/ids")
+	overridesPath = xdgPath("XDG_CONFIG_HOME", ".config", "hwspec/overrides.ids")
+)
+
+func xdgPath(env, fallback, rel string) string {
+	base := os.Getenv(env)
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, fallback)
+	}
+	return filepath.Join(base, rel)
+}
+
+// OverridesPath is where user corrections are read from.
+func OverridesPath() string { return overridesPath }
+
+// Layer describes one source that contributed to a database.
+type Layer struct {
+	Source  string // "embedded" or a file path
+	Date    string // from the file's header, "" if it has none
+	Entries int    // entries this layer added or replaced
+	Err     string
+}
+
+type db struct {
+	names  map[string]string
+	layers []Layer
+}
+
+var (
+	mu  sync.Mutex
+	dbs = map[Kind]*db{}
+)
+
+func get(k Kind) *db {
+	mu.Lock()
+	defer mu.Unlock()
+	if d, ok := dbs[k]; ok {
+		return d
+	}
+	d := load(k)
+	dbs[k] = d
+	return d
+}
+
+// Reset drops loaded databases so the next lookup reloads them (used by
+// tests, and after syncing new files).
+func Reset() {
+	mu.Lock()
+	dbs = map[Kind]*db{}
+	mu.Unlock()
+	ovMu.Lock()
+	ovCache = map[string]ovResult{}
+	ovMu.Unlock()
+}
+
+type source struct {
+	name string
+	open func() (io.ReadCloser, error)
+	date string
+}
+
+func newSource(name string, open func() (io.ReadCloser, error)) source {
+	return source{name: name, open: open, date: sourceDate(open)}
+}
+
+func load(k Kind) *db {
+	s := specs[k]
+	d := &db{names: map[string]string{}}
+
+	emb := newSource("embedded", func() (io.ReadCloser, error) {
+		raw, err := embedded.ReadFile("data/" + s.file + ".gz")
+		if err != nil {
+			return nil, err
+		}
+		return gzip.NewReader(bytes.NewReader(raw))
+	})
+	layers := []source{emb}
+
+	if systemEnabled {
+		for _, path := range s.system {
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+			sys := newSource(path, fileOpener(path))
+			// The distro's copy replaces the embedded one, unless the
+			// embedded one is provably newer; then both are applied, the
+			// embedded last, so its new and corrected names win while the
+			// distro's still fills any gaps. (Parsing both every time would
+			// cost ~40 ms per database for nothing in the common case.)
+			if emb.date != "" && sys.date != "" && emb.date > sys.date {
+				layers = []source{sys, emb}
+			} else {
+				layers = []source{sys}
+			}
+			break
+		}
+	}
+	if syncedDir != "" {
+		path := filepath.Join(syncedDir, s.file)
+		if _, err := os.Stat(path); err == nil {
+			layers = append(layers, newSource(path, fileOpener(path)))
+		}
+	}
+
+	for _, src := range layers {
+		layer := Layer{Source: src.name, Date: src.date}
+		m := map[string]string{}
+		r, err := src.open()
+		if err == nil {
+			err = s.parse(r, m)
+			r.Close()
+		}
+		if err != nil {
+			layer.Err = err.Error()
+		}
+		for key, name := range m {
+			if d.names[key] != name {
+				d.names[key] = name
+				layer.Entries++
+			}
+		}
+		d.layers = append(d.layers, layer)
+	}
+
+	// Bad lines in the overrides file are reported on every database's
+	// layer list, since the line's kind may be the unparseable part.
+	ov, err := loadOverrides(overridesPath)
+	if len(ov[k]) > 0 || err != nil {
+		layer := Layer{Source: overridesPath, Entries: len(ov[k])}
+		for key, name := range ov[k] {
+			d.names[key] = name
+		}
+		if err != nil {
+			layer.Err = err.Error()
+		}
+		d.layers = append(d.layers, layer)
+	}
+	return d
+}
+
+func fileOpener(path string) func() (io.ReadCloser, error) {
+	return func() (io.ReadCloser, error) {
+		f, err := os.Open(path)
+		if err != nil || !strings.HasSuffix(path, ".gz") {
+			return f, err
+		}
+		zr, err := gzip.NewReader(f)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{zr, f}, nil
+	}
+}
+
+var dateLine = regexp.MustCompile(`^#\s*(?:Version|Date):\s*(\d{4})[.-](\d{2})[.-](\d{2})`)
+
+// sourceDate reads the "# Version: 2026.09.03" / "# Date: 2026-09-03" header
+// that pci.ids, usb.ids and the generated files carry. "" if there is none.
+func sourceDate(open func() (io.ReadCloser, error)) string {
+	r, err := open()
+	if err != nil {
+		return ""
+	}
+	defer r.Close()
+	sc := bufio.NewScanner(r)
+	for i := 0; i < 30 && sc.Scan(); i++ {
+		if m := dateLine.FindStringSubmatch(sc.Text()); m != nil {
+			return m[1] + "-" + m[2] + "-" + m[3]
+		}
+	}
+	return ""
+}
+
+func scanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	return sc
+}
+
+// parsePCIStyle reads the pci.ids / usb.ids format into keys:
+//
+//	"8086"                vendor
+//	"8086:3e92"           device
+//	"8086:3e92:103c:8595" subsystem (pci.ids only)
+//	"class:03", "class:0300", "class:030000"
+func parsePCIStyle(r io.Reader, m map[string]string) error {
+	var vendor, device, class, subclass string
+	inClass := false
+	sc := scanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "C "):
+			inClass = true
+			id, label := split(line[2:])
+			class = id
+			m["class:"+class] = label
+		case line[0] != '\t':
+			// A new top-level section. usb.ids has non-vendor sections
+			// (AT, HID, L, ...) after the vendors; their keys never collide
+			// with 4-digit hex vendor IDs, so storing them is harmless.
+			inClass = false
+			id, label := split(line)
+			vendor = id
+			m[vendor] = label
+		case strings.HasPrefix(line, "\t\t"):
+			fields := line[2:]
+			if inClass {
+				id, label := split(fields)
+				m["class:"+class+subclass+id] = label
+				continue
+			}
+			// "\t\tSUBVENDOR SUBDEVICE  Name"
+			parts := strings.SplitN(fields, " ", 3)
+			if len(parts) == 3 {
+				m[vendor+":"+device+":"+strings.ToLower(parts[0]+":"+parts[1])] = strings.TrimSpace(parts[2])
+			}
+		default: // one tab
+			id, label := split(line[1:])
+			if inClass {
+				subclass = id
+				m["class:"+class+subclass] = label
+				continue
+			}
+			device = id
+			m[vendor+":"+device] = label
+		}
+	}
+	return sc.Err()
+}
+
+func split(s string) (id, label string) {
+	id, label, _ = strings.Cut(s, " ")
+	return strings.ToLower(id), strings.TrimSpace(label)
+}
+
+// parseTabbed reads "KEY<TAB>Name" lines (pnp.ids).
+func parseTabbed(r io.Reader, m map[string]string) error {
+	sc := scanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "\t"); ok {
+			m[strings.ToUpper(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		}
+	}
+	return sc.Err()
+}
+
+// parseOUI reads both the raw IEEE oui.txt ("040E3C     (base 16)  Name")
+// and the compact "040E3C<TAB>Name" form the embedded copy uses.
+func parseOUI(r io.Reader, m map[string]string) error {
+	sc := scanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if prefix, name, ok := strings.Cut(line, "(base 16)"); ok {
+			if k := strings.TrimSpace(prefix); len(k) == 6 {
+				m[strings.ToUpper(k)] = strings.TrimSpace(name)
+			}
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "\t"); ok && len(k) == 6 && !strings.HasPrefix(k, "#") {
+			m[strings.ToUpper(k)] = strings.TrimSpace(v)
+		}
+	}
+	return sc.Err()
+}
+
+// parseJEDEC reads "BANK ID<TAB>Name" lines into "BANK:ID" keys, e.g. "6:77".
+func parseJEDEC(r io.Reader, m map[string]string) error {
+	sc := scanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		var bank, id int
+		if _, err := fmt.Sscanf(k, "%d %x", &bank, &id); err == nil {
+			m[jedecKey(bank, id)] = strings.TrimSpace(v)
+		}
+	}
+	return sc.Err()
+}
+
+func jedecKey(bank, id int) string { return fmt.Sprintf("%d:%02X", bank, id) }
+
+// parseAMDGPU reads libdrm's "DEVICE,\tREVISION,\tName" lines into
+// "device:revision" keys, e.g. "1114:c2".
+func parseAMDGPU(r io.Reader, m map[string]string) error {
+	sc := scanner(r)
+	for sc.Scan() {
+		parts := strings.SplitN(sc.Text(), ",", 3)
+		if len(parts) != 3 || strings.HasPrefix(parts[0], "#") {
+			continue
+		}
+		m[norm(parts[0])+":"+norm(parts[1])] = strings.TrimSpace(parts[2])
+	}
+	return sc.Err()
+}
+
+func norm(id string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "0x"))
+}
+
+// PCIVendor returns the vendor name for a 4-digit hex ID, or "".
+func PCIVendor(vendor string) string { return get(PCI).names[norm(vendor)] }
+
+// PCIDevice returns the device name, or "".
+func PCIDevice(vendor, device string) string {
+	return get(PCI).names[norm(vendor)+":"+norm(device)]
+}
+
+// PCISubsystem returns the subsystem (board) name, or "".
+func PCISubsystem(vendor, device, subVendor, subDevice string) string {
+	return get(PCI).names[norm(vendor)+":"+norm(device)+":"+norm(subVendor)+":"+norm(subDevice)]
+}
+
+// PCIClass takes the 6-hex-digit class code (e.g. "030000") and returns the
+// subclass name ("VGA compatible controller"), or the class name if there is
+// no subclass entry. Like lspci, it ignores the programming interface.
+func PCIClass(code string) string {
+	c := norm(code)
+	names := get(PCI).names
+	for _, n := range []int{4, 2} {
+		if len(c) >= n {
+			if name, ok := names["class:"+c[:n]]; ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// USBVendor returns the vendor name for a 4-digit hex ID, or "".
+func USBVendor(vendor string) string { return get(USB).names[norm(vendor)] }
+
+// USBProduct returns the product name, or "".
+func USBProduct(vendor, product string) string {
+	return get(USB).names[norm(vendor)+":"+norm(product)]
+}
+
+// USBClass returns the name of a 2-hex-digit USB class code, or "".
+func USBClass(code string) string { return get(USB).names["class:"+norm(code)] }
+
+// PNPVendor maps a 3-letter EDID manufacturer ID (e.g. "DEL") to a name.
+func PNPVendor(id string) string { return get(PNP).names[strings.ToUpper(strings.TrimSpace(id))] }
+
+// AMDGPUName returns the retail name for an AMD GPU (device and revision
+// in hex, e.g. "1114", "c2"), or "".
+func AMDGPUName(device, revision string) string {
+	return get(AMDGPU).names[norm(device)+":"+norm(revision)]
+}
+
+// Layers reports where a database's entries came from.
+func Layers(k Kind) []Layer { return get(k).layers }
+
+// Entries returns how many names a database holds.
+func Entries(k Kind) int { return len(get(k).names) }
+
+// Loaded describes the databases used so far, for recording in a report,
+// e.g. "embedded (2026-06-26) + /usr/share/hwdata/pci.ids (2026-09-03)".
+func Loaded() map[Kind]string {
+	mu.Lock()
+	defer mu.Unlock()
+	out := map[Kind]string{}
+	for k, d := range dbs {
+		var parts []string
+		for _, l := range d.layers {
+			s := l.Source
+			if s == overridesPath {
+				s = "overrides"
+			}
+			if l.Date != "" {
+				s += " (" + l.Date + ")"
+			}
+			parts = append(parts, s)
+		}
+		out[k] = strings.Join(parts, " + ")
+	}
+	return out
+}

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.22", "stable"] # oldest supported, and current
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        if: matrix.go == 'stable'
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build static binaries
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOARCH=$arch go build -trimpath -o /tmp/hwspec-$arch ./cmd/hwspec
+          done
+          file /tmp/hwspec-amd64 | grep -q 'statically linked'
+      - name: Capture on the runner
+        run: /tmp/hwspec-amd64 capture -f text

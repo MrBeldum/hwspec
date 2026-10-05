@@ -58,7 +58,7 @@ func idsUpdate(args []string) error {
 	fmt.Fprintf(os.Stderr, "Checking %s\n", url)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	results, err := ids.Update(ctx, ids.UpdateOptions{
+	res, err := ids.Update(ctx, ids.UpdateOptions{
 		BaseURL:    url,
 		UserAgent:  "hwspec/" + fullVersion(),
 		DryRun:     check,
@@ -66,6 +66,9 @@ func idsUpdate(args []string) error {
 	})
 	var partial *ids.InstallError
 	switch {
+	case errors.Is(err, ids.ErrBuiltInIsNewer):
+		fmt.Printf("Already up to date: the databases built into hwspec are newer than the published bundle (%s).\n", res.BundleAt.Format("2006-01-02"))
+		return nil
 	case errors.As(err, &partial):
 		return fmt.Errorf("update partly installed: %w; run `hwspec ids update` again to finish", err)
 	case err != nil:
@@ -73,6 +76,7 @@ func idsUpdate(args []string) error {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	changed := 0
+	results := res.Files
 	for _, r := range results {
 		status := r.Status
 		if check && status != "unchanged" {
@@ -94,8 +98,8 @@ func idsUpdate(args []string) error {
 	}
 	// Bundles are published weekly; a much older one means publishing has
 	// stopped (or a mirror is stale).
-	if at, err := ids.SyncedAt(); err == nil && !at.IsZero() && time.Since(at) > 60*24*time.Hour {
-		fmt.Fprintf(os.Stderr, "hwspec: warning: the newest published bundle is from %s; the ID databases may be stale\n", at.Format("2006-01-02"))
+	if time.Since(res.BundleAt) > 60*24*time.Hour {
+		fmt.Fprintf(os.Stderr, "hwspec: warning: the newest published bundle is from %s; the ID databases may be stale\n", res.BundleAt.Format("2006-01-02"))
 	}
 	return nil
 }

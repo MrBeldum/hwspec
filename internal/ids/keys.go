@@ -18,7 +18,10 @@ func NormalizeKey(kind Kind, id string) (string, error) {
 	case PCI, USB:
 		if code, isClass := strings.CutPrefix(strings.ToLower(id), "class "); isClass {
 			code = norm(code)
-			if !isHex(code) || len(code)%2 != 0 || len(code) > 6 || (kind == USB && len(code) != 2) {
+			if kind == PCI && len(code) == 6 && isHex(code) {
+				return "", fmt.Errorf("%q: names are per class or subclass; drop the programming interface (use %s)", code, code[:4])
+			}
+			if !isHex(code) || len(code)%2 != 0 || len(code) > 4 || (kind == USB && len(code) != 2) {
 				return "", fmt.Errorf("%q is not a %s class code", strings.TrimSpace(code), kind)
 			}
 			return "class:" + code, nil
@@ -118,12 +121,15 @@ func isHex(s string) bool {
 // in a terminal: control characters (which could carry escape sequences)
 // are dropped and invalid UTF-8 is replaced.
 func cleanName(s string) string {
-	s = strings.ToValidUTF8(s, "�")
-	if strings.IndexFunc(s, unicode.IsControl) < 0 {
+	// Control characters carry escape sequences; Cf (format) characters
+	// include bidi overrides that visually reorder text.
+	unsafe := func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if strings.IndexFunc(s, unsafe) < 0 {
 		return strings.TrimSpace(s)
 	}
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unsafe(r) {
 			return -1
 		}
 		return r

@@ -101,10 +101,11 @@ func parseOverrideLine(line string) (Kind, string, string, error) {
 	if !ok || name == "" {
 		return "", "", "", errors.New(`expected "KIND KEY = Name"`)
 	}
-	kind, id, ok := strings.Cut(strings.TrimSpace(lhs), " ")
-	if !ok || strings.TrimSpace(id) == "" {
+	fields := strings.Fields(lhs)
+	if len(fields) < 2 {
 		return "", "", "", errors.New(`expected "KIND KEY = Name"`)
 	}
+	kind, id := fields[0], strings.Join(fields[1:], " ") // "pci class 0300"
 	k := Kind(strings.ToLower(kind))
 	key, err := NormalizeKey(k, id)
 	if err != nil {

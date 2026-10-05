@@ -27,7 +27,8 @@ func TestEquivalentSpellingsResolveTheSame(t *testing.T) {
 		{CPU, []string{"intel:6:9e:99"}, "Kaby Lake | Skylake"}, // unknown stepping: model entry
 		{OUI, []string{"04:0E:3C", "04-0e-3c-12-34-56", "040e3c"}, "HP Inc."},
 		{PNP, []string{"DEL", "del"}, "Dell Inc."},
-		{PCI, []string{"class 0300", "class 030000"}, "VGA compatible controller"},
+		{PCI, []string{"class 0300", "class 0x0300"}, "VGA compatible controller"},
+		{PCI, []string{"class 03"}, "Display controller"},
 	}
 	for _, c := range cases {
 		for _, s := range c.spellings {
@@ -68,7 +69,7 @@ func TestMalformedIDsAreRejectedWithAReason(t *testing.T) {
 		kind Kind
 		id   string
 	}{
-		{USB, "12345"}, {USB, "zz"}, {USB, "1:2:3"}, {PCI, "1:2:3"}, {USB, "class 0300"},
+		{USB, "12345"}, {USB, "zz"}, {USB, "1:2:3"}, {PCI, "1:2:3"}, {USB, "class 0300"}, {PCI, "class 030000"},
 		{PNP, "DE"}, {PNP, "D3L"}, {OUI, "zz:zz"}, {JEDEC, "0:4E"}, {JEDEC, "1:7F"}, {JEDEC, "Samsung"},
 		{AMDGPU, "1114"}, {AMDGPU, "1114:zz"}, {BT, "10000"}, {CPU, "via:6:1"}, {CPU, "intel:x:1"},
 		{CPU, "intel:6:9e:-1"}, {"nope", "1"},
@@ -89,6 +90,7 @@ func TestNamesNeverCarryControlCharacters(t *testing.T) {
 		"tab\there":                        "tabhere",
 		"bad \xff utf8":                    "bad � utf8",
 		"c1 \u009b31m":                     "c1 31m",
+		"bidi \u202egnp.exe":               "bidi gnp.exe",
 	} {
 		if got := CleanName(in); got != want {
 			t.Errorf("CleanName(%q) = %q, want %q", in, got, want)
@@ -106,8 +108,8 @@ func TestUpdateRefusesBundlesOlderThanBuiltInData(t *testing.T) {
 	syncedDir = filepath.Join(t.TempDir(), "ids")
 	b := newBundle(t)
 	b.publish(embeddedManifest().GeneratedAt.Add(-time.Hour), b.key)
-	if _, err := b.update(UpdateOptions{}); err == nil || !strings.Contains(err.Error(), "built into hwspec") {
-		t.Errorf("err = %v, want refusal of a bundle older than the built-in data", err)
+	if _, err := b.update(UpdateOptions{}); !errors.Is(err, ErrBuiltInIsNewer) {
+		t.Errorf("err = %v, want ErrBuiltInIsNewer", err)
 	}
 	if _, err := os.Stat(syncedDir); !os.IsNotExist(err) {
 		t.Error("files were installed from a refused bundle")

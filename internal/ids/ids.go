@@ -176,7 +176,9 @@ func load(k Kind) *db {
 				continue
 			}
 			src := source{name: path, open: fileOpener(path)}
-			if src.date = sourceDate(src.open); src.date == "" {
+			// Undated files are dated by modification time, unless that is
+			// in the future too (a broken clock): then they rank as oldest.
+			if src.date = sourceDate(src.open); src.date == "" && st.ModTime().Before(time.Now().Add(24*time.Hour)) {
 				src.date = st.ModTime().UTC().Format("2006-01-02")
 			}
 			cands = append(cands, src)

@@ -44,7 +44,7 @@ func newBundle(t *testing.T) *bundle {
 		}
 		write(t, filepath.Join(b.dir, name), string(data))
 	}
-	b.publish(time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC), priv)
+	b.publish(time.Now().UTC().Truncate(time.Second), priv)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.requests.Add(1)
@@ -115,7 +115,7 @@ func TestUpdate(t *testing.T) {
 	if l := Layers(PCI); l[0].Source != filepath.Join(syncedDir, "pci.ids.gz") {
 		t.Errorf("synced copy not used: %+v", l)
 	}
-	if SyncedAt().IsZero() {
+	if at, err := SyncedAt(); err != nil || at.IsZero() {
 		t.Error("SyncedAt is zero after update")
 	}
 
@@ -163,8 +163,8 @@ func TestUpdateRejects(t *testing.T) {
 		return buf.String()
 	}()
 	_, otherKey, _ := ed25519.GenerateKey(rand.Reader)
-	later := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	earlier := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	later := time.Now().UTC().Add(time.Hour)
+	earlier := time.Now().UTC().Add(-time.Hour)
 
 	cases := []struct {
 		name  string

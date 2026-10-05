@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 //go:embed data/*.ids.gz data/manifest.json
@@ -158,7 +159,14 @@ func load(k Kind) *db {
 	if syncedDir != "" {
 		path := filepath.Join(syncedDir, s.file+".gz")
 		if _, err := os.Stat(path); err == nil {
-			cands = append(cands, source{path, fileOpener(path), manifestDate(syncedManifest(), s.file)})
+			// Synced files are dated by the signed manifest saved with them;
+			// without a readable manifest there's no trustworthy date, so
+			// they aren't used (and the reason is shown by `hwspec ids`).
+			if m, err := syncedManifest(); err != nil {
+				d.layers = append(d.layers, Layer{Source: path, Err: "synced manifest unreadable: " + err.Error()})
+			} else {
+				cands = append(cands, source{path, fileOpener(path), manifestDate(m, s.file)})
+			}
 		}
 	}
 	if systemEnabled {
@@ -205,18 +213,14 @@ func load(k Kind) *db {
 		break
 	}
 
-	// Bad lines in the overrides file are reported on every database's
-	// layer list, since the line's kind may be the unparseable part.
-	ov, err := loadOverrides(overridesPath)
-	if len(ov[k]) > 0 || err != nil {
-		layer := Layer{Source: overridesPath, Entries: len(ov[k])}
+	// Mistakes in the overrides file are reported once, by OverridesError,
+	// not as a layer of every database.
+	ov, _ := loadOverrides(overridesPath)
+	if len(ov[k]) > 0 {
 		for key, name := range ov[k] {
 			d.names[key] = name
 		}
-		if err != nil {
-			layer.Err = err.Error()
-		}
-		d.layers = append(d.layers, layer)
+		d.layers = append(d.layers, Layer{Source: overridesPath, Entries: len(ov[k])})
 	}
 	return d
 }
@@ -236,13 +240,16 @@ func embeddedManifest() *Manifest {
 }
 
 // syncedManifest reads the manifest saved by the last `hwspec ids update`.
-func syncedManifest() *Manifest {
+// It returns (nil, nil) when nothing has been synced.
+func syncedManifest() (*Manifest, error) {
 	b, err := os.ReadFile(filepath.Join(syncedDir, "manifest.json"))
-	if err != nil {
-		return nil
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	m, _ := ParseManifest(b)
-	return m
+	if err != nil {
+		return nil, err
+	}
+	return ParseManifest(b)
 }
 
 func manifestDate(m *Manifest, file string) string {
@@ -283,10 +290,16 @@ func sourceDate(open func() (io.ReadCloser, error)) string {
 	sc := bufio.NewScanner(r)
 	for i := 0; i < 30 && sc.Scan(); i++ {
 		if m := dateLine.FindStringSubmatch(sc.Text()); m != nil {
-			return m[1] + "-" + m[2] + "-" + m[3]
+			date := m[1] + "-" + m[2] + "-" + m[3]
+			// A date in the future can't be right, and would make the file
+			// look newest forever; treat it as undated.
+			if date > time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02") {
+				return ""
+			}
+			return date
 		}
 	}
-	return ""
+	return "" // a read error mid-header also means "undated"
 }
 
 func scanner(r io.Reader) *bufio.Scanner {
@@ -334,7 +347,7 @@ func parsePCIStyle(r io.Reader, m map[string]string) error {
 			// "\t\tSUBVENDOR SUBDEVICE  Name"
 			parts := strings.SplitN(fields, " ", 3)
 			if len(parts) == 3 {
-				m[vendor+":"+device+":"+strings.ToLower(parts[0]+":"+parts[1])] = strings.TrimSpace(parts[2])
+				m[vendor+":"+device+":"+strings.ToLower(parts[0]+":"+parts[1])] = cleanName(parts[2])
 			}
 		default: // one tab
 			id, label := split(line[1:])
@@ -352,7 +365,7 @@ func parsePCIStyle(r io.Reader, m map[string]string) error {
 
 func split(s string) (id, label string) {
 	id, label, _ = strings.Cut(s, " ")
-	return strings.ToLower(id), strings.TrimSpace(label)
+	return strings.ToLower(id), cleanName(label)
 }
 
 // parseTabbed reads "KEY<TAB>Name" lines (pnp.ids).
@@ -364,7 +377,7 @@ func parseTabbed(r io.Reader, m map[string]string) error {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "\t"); ok {
-			m[strings.ToUpper(strings.TrimSpace(k))] = strings.TrimSpace(v)
+			m[strings.ToUpper(strings.TrimSpace(k))] = cleanName(v)
 		}
 	}
 	return sc.Err()
@@ -378,12 +391,12 @@ func parseOUI(r io.Reader, m map[string]string) error {
 		line := sc.Text()
 		if prefix, name, ok := strings.Cut(line, "(base 16)"); ok {
 			if k := strings.TrimSpace(prefix); len(k) == 6 {
-				m[strings.ToUpper(k)] = strings.TrimSpace(name)
+				m[strings.ToUpper(k)] = cleanName(name)
 			}
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "\t"); ok && len(k) == 6 && !strings.HasPrefix(k, "#") {
-			m[strings.ToUpper(k)] = strings.TrimSpace(v)
+			m[strings.ToUpper(k)] = cleanName(v)
 		}
 	}
 	return sc.Err()
@@ -403,7 +416,7 @@ func parseJEDEC(r io.Reader, m map[string]string) error {
 		}
 		var bank, id int
 		if _, err := fmt.Sscanf(k, "%d %x", &bank, &id); err == nil {
-			m[jedecKey(bank, id)] = strings.TrimSpace(v)
+			m[jedecKey(bank, id)] = cleanName(v)
 		}
 	}
 	return sc.Err()
@@ -419,7 +432,8 @@ func parseCPU(r io.Reader, m map[string]string) error {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "\t"); ok {
-			m[strings.ToLower(k)] = v
+			codename, uarch, _ := strings.Cut(v, "\t")
+			m[strings.ToLower(k)] = cleanName(codename) + "\t" + cleanName(uarch)
 		}
 	}
 	return sc.Err()
@@ -436,7 +450,7 @@ func parseAMDGPU(r io.Reader, m map[string]string) error {
 		if len(parts) != 3 || strings.HasPrefix(parts[0], "#") {
 			continue
 		}
-		m[norm(parts[0])+":"+norm(parts[1])] = strings.TrimSpace(parts[2])
+		m[norm(parts[0])+":"+norm(parts[1])] = cleanName(parts[2])
 	}
 	return sc.Err()
 }
@@ -528,8 +542,11 @@ func Layers(k Kind) []Layer { return get(k).layers }
 // Entries returns how many names a database holds.
 func Entries(k Kind) int { return len(get(k).names) }
 
-// Loaded describes the databases used so far, for recording in a report,
-// e.g. "embedded (2026-06-26) + /usr/share/hwdata/pci.ids (2026-09-03)".
+// Loaded describes the databases used so far, for recording in a report:
+// the source each one's names came from, e.g. "synced (2026-10-05)" or
+// "/usr/share/hwdata/pci.ids (2026-09-03) + overrides". Sources that failed
+// are left out. The synced copy and the overrides file live in the user's
+// home directory, so they are named by role rather than path.
 func Loaded() map[Kind]string {
 	mu.Lock()
 	defer mu.Unlock()
@@ -537,9 +554,15 @@ func Loaded() map[Kind]string {
 	for k, d := range dbs {
 		var parts []string
 		for _, l := range d.layers {
+			if l.Err != "" {
+				continue
+			}
 			s := l.Source
-			if s == overridesPath {
+			switch {
+			case s == overridesPath:
 				s = "overrides"
+			case syncedDir != "" && strings.HasPrefix(s, syncedDir+string(filepath.Separator)):
+				s = "synced"
 			}
 			if l.Date != "" {
 				s += " (" + l.Date + ")"
@@ -549,4 +572,11 @@ func Loaded() map[Kind]string {
 		out[k] = strings.Join(parts, " + ")
 	}
 	return out
+}
+
+// OverridesError reports problems in the overrides file (nil if it is
+// missing or fine). Valid lines still apply when some lines are bad.
+func OverridesError() error {
+	_, err := loadOverrides(overridesPath)
+	return err
 }

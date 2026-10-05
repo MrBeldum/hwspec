@@ -143,11 +143,20 @@ pci = missing key
 	}
 	layers := Layers(PCI)
 	last := layers[len(layers)-1]
-	if last.Source != overridesPath || last.Entries != 3 {
+	if last.Source != overridesPath || last.Entries != 3 || last.Err != "" {
 		t.Errorf("last PCI layer = %+v, want overrides with 3 entries", last)
 	}
-	if !strings.Contains(last.Err, "line 10") || !strings.Contains(last.Err, "line 11") {
-		t.Errorf("bad lines not reported: %q", last.Err)
+	if err := OverridesError(); err == nil || !strings.Contains(err.Error(), "line 10") || !strings.Contains(err.Error(), "line 11") {
+		t.Errorf("bad lines not reported: %v", err)
+	}
+	// Databases the file has no valid lines for get no overrides layer.
+	for _, l := range Layers(BT) {
+		if l.Source == overridesPath {
+			t.Errorf("bluetooth has an overrides layer without entries: %+v", l)
+		}
+	}
+	if got := Loaded()[PCI]; !strings.HasSuffix(got, " + overrides") {
+		t.Errorf("Loaded()[pci] = %q, want it to end with + overrides", got)
 	}
 }
 
@@ -177,11 +186,25 @@ func TestNewestSourceWins(t *testing.T) {
 		t.Errorf("layers = %+v, want embedded only", l)
 	}
 
-	// A newer one replaces it.
-	write(t, sys, "#\tVersion: 2999.01.01\n8086  New Intel\n")
+	// A newer one (dated today, so never older than the embedded copy)
+	// replaces it.
+	today := time.Now().UTC().Format("2006.01.02")
+	write(t, sys, "#\tVersion: "+today+"\n8086  New Intel\n")
 	Reset()
 	if got := PCIVendor("8086"); got != "New Intel" {
 		t.Errorf("newer system file lost: %q", got)
+	}
+
+	// A date in the future is impossible and is ignored (the file is then
+	// dated by its modification time), so it can't pin itself as newest.
+	write(t, sys, "#\tVersion: 2999.01.01\n8086  Future Intel\n")
+	past := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(sys, past, past); err != nil {
+		t.Fatal(err)
+	}
+	Reset()
+	if got := PCIVendor("8086"); got != "Intel Corporation" {
+		t.Errorf("future-dated system file won: %q", got)
 	}
 
 	// A distro file without a date header is dated by its mtime.
@@ -197,10 +220,10 @@ func TestNewestSourceWins(t *testing.T) {
 
 	// A synced copy is dated by its manifest; a stale one loses to a newer
 	// distro file, a fresh one wins.
-	write(t, sys, "#\tVersion: 2500.01.01\n8086  Distro Intel\n")
+	write(t, sys, "#\tVersion: "+today+"\n8086  Distro Intel\n")
 	syncedDir = filepath.Join(dir, "synced")
 	writeGz(t, filepath.Join(syncedDir, "pci.ids.gz"), "8086  Synced Intel\n")
-	for _, c := range []struct{ date, want string }{{"2400-01-01", "Distro Intel"}, {"2600-01-01", "Synced Intel"}} {
+	for _, c := range []struct{ date, want string }{{"2000-01-01", "Distro Intel"}, {"2999-01-01", "Synced Intel"}} {
 		date, want := c.date, c.want
 		write(t, filepath.Join(syncedDir, "manifest.json"),
 			`{"format":1,"generated_at":"2026-01-01T00:00:00Z","files":{"pci.ids.gz":{"date":"`+date+`"}}}`)
@@ -209,6 +232,22 @@ func TestNewestSourceWins(t *testing.T) {
 			t.Errorf("synced dated %s: got %q, want %q", date, got, want)
 		}
 	}
+
+	// An unreadable synced manifest means the synced files can't be dated,
+	// so they aren't used, and the reason is reported.
+	write(t, filepath.Join(syncedDir, "manifest.json"), "{broken")
+	Reset()
+	if got := PCIVendor("8086"); got != "Distro Intel" {
+		t.Errorf("synced file used without a manifest: %q", got)
+	}
+	if l := Layers(PCI); l[0].Err == "" || !strings.Contains(l[0].Err, "manifest") {
+		t.Errorf("unreadable manifest not reported: %+v", l)
+	}
+	if _, err := SyncedAt(); err == nil {
+		t.Error("SyncedAt hides an unreadable manifest")
+	}
+	write(t, filepath.Join(syncedDir, "manifest.json"),
+		`{"format":1,"generated_at":"2026-01-01T00:00:00Z","files":{"pci.ids.gz":{"date":"2999-01-01"}}}`)
 
 	// An unreadable newest source falls back to the next newest.
 	write(t, filepath.Join(syncedDir, "pci.ids.gz"), "not gzip")

@@ -43,12 +43,14 @@ Graphics
 |---|---|
 | System | Vendor, model, family, SKU, chassis type, serial and UUID¹; OS, kernel, init, boot mode, Secure Boot, VM/container detection |
 | Board & BIOS | Board vendor, model, version, serial¹; firmware vendor, version, date |
-| CPU | Model, sockets, cores, threads, P/E core split (Intel hybrid), clock range, scaling driver, caches, microcode, flags |
+| CPU | Model, codename and core microarchitecture (e.g. Coffee Lake / Skylake, Raphael / Zen 4), signature, sockets, cores, threads, P/E core split, clock range, scaling driver, caches, microcode, flags |
 | Memory | Usable and installed size, slots, max capacity, ECC; per module¹: slot, size, type (DDR4/DDR5…), form factor, rated and configured speed, voltage, rank, manufacturer, part number |
 | Storage | Model, serial, firmware, size, type, transport (NVMe/SATA/USB/…), partitions, filesystems, mount points; health¹: NVMe SMART log (wear, hours, data written, errors) or `smartctl` for SATA |
 | Graphics | GPUs with driver, VRAM (amdgpu), PCIe link, outputs; monitors from EDID: maker, model, serial, size, native mode |
 | Network | Physical adapters: type, driver, bus, MAC and its registered vendor, link state, speed |
-| Other | Sound cards, batteries (wear, cycles), sensors (temperatures, fans, voltages, power), every PCI device (class, driver, IOMMU group, PCIe link) and USB device |
+| Bluetooth | Controllers: chip maker, Bluetooth version, address and its vendor, power state, the USB/PCI adapter (no root or bluetoothd needed) |
+| Audio | Sound cards with their HD Audio codec chips (e.g. Realtek ALC897) |
+| Other | Batteries (wear, cycles), sensors (temperatures, fans, voltages, power), every PCI device (class, driver, IOMMU group, PCIe link) and USB device |
 
 ¹ Needs root: run with `--full`.
 
@@ -86,7 +88,7 @@ Most data is readable as a normal user. `--full` re-runs the capture through `pk
 
 ## Hardware ID databases
 
-Captures store raw IDs, and names come from these databases:
+Captures store raw IDs, and names come from these databases. HD Audio codecs need none: the kernel names them, and the codec vendor comes from `pci`.
 
 | Database | Translates | Upstream | Licence |
 |---|---|---|---|
@@ -96,6 +98,8 @@ Captures store raw IDs, and names come from these databases:
 | `oui` | MAC address prefixes | [IEEE registry](https://standards-oui.ieee.org/) | public listing |
 | `jedec` | Memory makers (JEP106), including codes like `80CE` or HP's `Unknown - [0xF785]` | [i2c-tools](https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git) `decode-dimms` | GPL-2.0-or-later |
 | `amdgpu` | AMD GPU retail names by device and revision | [libdrm](https://gitlab.freedesktop.org/mesa/drm) | MIT |
+| `bluetooth` | Bluetooth chip makers (SIG company IDs) | [Bluetooth SIG assigned numbers](https://bitbucket.org/bluetooth-SIG/public) | published by the Bluetooth SIG |
+| `cpu` | CPU codename and core microarchitecture by family/model/stepping | Linux kernel [`intel-family.h`](https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/intel-family.h) and [`amd.c`](https://github.com/torvalds/linux/blob/master/arch/x86/kernel/cpu/amd.c), plus [a curated list](tools/genids/cpu-curated.ids) | GPL-2.0 (kernel); curated list GPL-3.0-or-later |
 
 Each database can come from three places, and hwspec uses the **newest**:
 
@@ -112,7 +116,7 @@ hwspec ids update --check   # what would change
 hwspec ids update           # install the latest databases (~1 MB)
 ```
 
-A [weekly workflow](.github/workflows/ids.yml) rebuilds all six databases from upstream, checks each one parses into a plausible number of entries, and publishes them as the [`ids-latest`](https://github.com/jiegui2025/hwspec/releases/tag/ids-latest) release, with a manifest signed by an ed25519 key. `hwspec ids update`:
+A [weekly workflow](.github/workflows/ids.yml) rebuilds all eight databases from upstream, checks each one parses into a plausible number of entries, and publishes them as the [`ids-latest`](https://github.com/jiegui2025/hwspec/releases/tag/ids-latest) release, with a manifest signed by an ed25519 key. `hwspec ids update`:
 
 - checks the manifest's signature against the public key built into hwspec, and refuses a bundle older than the one already installed;
 - downloads only the databases that changed, and verifies each one's size, SHA-256 and contents before installing anything;

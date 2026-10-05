@@ -4,6 +4,8 @@
 //	genids jedec <decode-dimms> <out.gz>    JEDEC JEP106 table from i2c-tools
 //	genids oui   <oui.txt> <out.gz>         IEEE MA-L registry, compacted
 //	genids gzip  <file> <out.gz>            any file as-is (pci/usb/pnp/amdgpu)
+//	genids bluetooth <company_identifiers.yaml> <out.gz>
+//	genids cpu <intel-family.h> <amd.c> <cpu-curated.ids> <out.gz>
 //	genids manifest <dir> [previous.json]   write <dir>/manifest.json
 //	genids sign <manifest.json>             write <manifest.json>.sig; key from
 //	                                        $HWSPEC_IDS_SIGNING_KEY (base64 seed)
@@ -42,12 +44,21 @@ func main() {
 	}
 	var err error
 	switch cmd, args := os.Args[1], os.Args[2:]; cmd {
-	case "jedec", "oui", "gzip":
+	case "jedec", "oui", "gzip", "bluetooth":
 		if len(args) != 2 {
 			err = fmt.Errorf("usage: genids %s SRC OUT.gz", cmd)
 			break
 		}
 		err = convert(cmd, args[0], args[1])
+	case "cpu":
+		if len(args) != 4 {
+			err = fmt.Errorf("usage: genids cpu INTEL-FAMILY.H AMD.C CURATED OUT.gz")
+			break
+		}
+		var data []byte
+		if data, err = cpu(args[0], args[1], args[2]); err == nil {
+			err = writeGzip(args[3], data)
+		}
 	case "manifest":
 		prev := ""
 		if len(args) > 1 {
@@ -78,12 +89,18 @@ func convert(kind, src, out string) error {
 		data, err = jedec(in)
 	case "oui":
 		data, err = oui(in)
+	case "bluetooth":
+		data, err = btcompany(in)
 	default:
 		data = in
 	}
 	if err != nil {
 		return err
 	}
+	return writeGzip(out, data)
+}
+
+func writeGzip(out string, data []byte) error {
 	// gzip.Writer leaves the header timestamp zero, so this is deterministic.
 	var buf bytes.Buffer
 	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)

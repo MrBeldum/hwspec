@@ -53,23 +53,37 @@ func Names(r *report.Report) {
 
 	for i := range r.Network {
 		n := &r.Network[i]
-		switch n.Bus {
-		case "pci":
-			if dev := pciByAddress(r, n.BusAddress); dev != nil {
-				set(&n.Vendor, dev.Vendor)
-				set(&n.Model, dev.Device)
-			}
-		case "usb":
-			for _, u := range r.USB {
-				if u.Path == n.BusAddress {
-					set(&n.Vendor, u.Vendor)
-					set(&n.Model, u.Product)
-				}
-			}
-		}
+		n.Vendor, n.Model = adapterName(r, n.Bus, n.BusAddress, n.Vendor, n.Model)
 		// A redacted file has no MAC; keep the vendor recorded at capture.
 		if n.MAC != "" {
 			n.MACVendor = ids.MACVendor(n.MAC)
+		}
+	}
+
+	if r.CPU.Family > 0 {
+		codename, uarch := ids.CPUCodename(r.CPU.Vendor, r.CPU.Family, r.CPU.ModelID, r.CPU.Stepping)
+		set(&r.CPU.Codename, codename)
+		set(&r.CPU.Microarchitecture, uarch)
+	}
+
+	for i := range r.Bluetooth {
+		b := &r.Bluetooth[i]
+		if b.ManufacturerID > 0 || b.Version != "" {
+			set(&b.Manufacturer, ids.BluetoothCompany(uint16(b.ManufacturerID)))
+		}
+		if b.Address != "" {
+			b.AddressVendor = ids.MACVendor(b.Address)
+		}
+		b.Vendor, b.Model = adapterName(r, b.Bus, b.BusAddress, b.Vendor, b.Model)
+	}
+
+	for i := range r.Audio {
+		for j := range r.Audio[i].Codecs {
+			c := &r.Audio[i].Codecs[j]
+			// HDA vendor IDs are the PCI vendor in the top 16 bits.
+			if len(c.VendorID) == 8 {
+				set(&c.Vendor, ids.PCIVendor(c.VendorID[:4]))
+			}
 		}
 	}
 
@@ -95,6 +109,25 @@ func Names(r *report.Report) {
 	for k, v := range ids.Loaded() {
 		r.Tool.IDDatabases[string(k)] = v
 	}
+}
+
+// adapterName looks up the PCI or USB device behind an interface.
+func adapterName(r *report.Report, bus, addr, vendor, model string) (string, string) {
+	switch bus {
+	case "pci":
+		if dev := pciByAddress(r, addr); dev != nil {
+			set(&vendor, dev.Vendor)
+			set(&model, dev.Device)
+		}
+	case "usb":
+		for _, u := range r.USB {
+			if u.Path == addr {
+				set(&vendor, u.Vendor)
+				set(&model, u.Product)
+			}
+		}
+	}
+	return vendor, model
 }
 
 func set(field *string, name string) {

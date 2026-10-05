@@ -24,6 +24,9 @@ const OverridesHelp = `# hwspec name overrides: one "KIND KEY = Name" per line; 
 #   jedec F785 = Avant Technology          memory maker, as the firmware reports it
 #   jedec 6:77 = Avant Technology          memory maker, as JEP106 bank:ID (hex)
 #   amdgpu 1114:c2 = Radeon 860M           AMD GPU device:revision
+#   bluetooth 0002 = Intel                 Bluetooth SIG company ID (hex)
+#   cpu intel:6:9e:10 = Coffee Lake | Skylake   CPU vendor:family:model[:stepping]
+#                                          (hex, stepping decimal) = codename | core
 `
 
 var (
@@ -119,6 +122,11 @@ func parseOverrideLine(line string) (Kind, string, string, error) {
 	switch kind {
 	case PCI, USB, AMDGPU:
 		return kind, norm(key), name, nil
+	case BT:
+		return kind, strings.ToUpper(norm(key)), name, nil
+	case CPU:
+		codename, uarch, _ := strings.Cut(name, "|")
+		return kind, strings.ToLower(key), strings.TrimSpace(codename) + "\t" + strings.TrimSpace(uarch), nil
 	case PNP:
 		return kind, strings.ToUpper(key), name, nil
 	case OUI:

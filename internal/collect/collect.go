@@ -51,6 +51,7 @@ func Collect(version string) *report.Report {
 	c.gpus() // after pci
 	c.displays()
 	c.network()
+	c.bluetooth()
 	c.audio()
 	c.batteries()
 	c.sensors()

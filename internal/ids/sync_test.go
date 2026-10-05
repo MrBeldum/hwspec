@@ -95,7 +95,7 @@ func TestUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if statuses(res) != "new,new,new,new,new,new" {
+	if statuses(res) != strings.Repeat("new,", len(Kinds)-1)+"new" {
 		t.Errorf("dry run statuses = %s", statuses(res))
 	}
 	if _, err := os.Stat(syncedDir); !os.IsNotExist(err) {
@@ -106,7 +106,7 @@ func TestUpdate(t *testing.T) {
 	if res, err = b.update(UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if statuses(res) != "new,new,new,new,new,new" {
+	if statuses(res) != strings.Repeat("new,", len(Kinds)-1)+"new" {
 		t.Errorf("statuses = %s", statuses(res))
 	}
 	if got := PCIVendor("8086"); got != "Intel Corporation" {
@@ -124,7 +124,7 @@ func TestUpdate(t *testing.T) {
 	if res, err = b.update(UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if statuses(res) != "unchanged,unchanged,unchanged,unchanged,unchanged,unchanged" || b.requests.Load() != 2 {
+	if statuses(res) != strings.Repeat("unchanged,", len(Kinds)-1)+"unchanged" || b.requests.Load() != 2 {
 		t.Errorf("statuses = %s with %d requests", statuses(res), b.requests.Load())
 	}
 }

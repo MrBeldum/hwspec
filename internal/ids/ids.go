@@ -44,9 +44,11 @@ const (
 	OUI    Kind = "oui"
 	JEDEC  Kind = "jedec"
 	AMDGPU Kind = "amdgpu"
+	BT     Kind = "bluetooth"
+	CPU    Kind = "cpu"
 )
 
-var Kinds = []Kind{PCI, USB, PNP, OUI, JEDEC, AMDGPU}
+var Kinds = []Kind{PCI, USB, PNP, OUI, JEDEC, AMDGPU, BT, CPU}
 
 type spec struct {
 	file   string   // embedded and synced file name
@@ -65,6 +67,8 @@ var specs = map[Kind]spec{
 		"/usr/share/libdrm/amdgpu.ids",
 		"/run/current-system/sw/share/libdrm/amdgpu.ids",
 	}, parseAMDGPU},
+	BT:  {"bluetooth.ids", nil, parseTabbed},
+	CPU: {"cpu.ids", nil, parseCPU},
 }
 
 func hwdata(name string) []string {
@@ -405,6 +409,22 @@ func parseJEDEC(r io.Reader, m map[string]string) error {
 	return sc.Err()
 }
 
+// parseCPU reads "intel:6:9e[:10]<TAB>Codename<TAB>Microarchitecture" lines,
+// keeping "Codename<TAB>Microarchitecture" as the value.
+func parseCPU(r io.Reader, m map[string]string) error {
+	sc := scanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "\t"); ok {
+			m[strings.ToLower(k)] = v
+		}
+	}
+	return sc.Err()
+}
+
 func jedecKey(bank, id int) string { return fmt.Sprintf("%d:%02X", bank, id) }
 
 // parseAMDGPU reads libdrm's "DEVICE,\tREVISION,\tName" lines into
@@ -472,6 +492,34 @@ func PNPVendor(id string) string { return get(PNP).names[strings.ToUpper(strings
 // in hex, e.g. "1114", "c2"), or "".
 func AMDGPUName(device, revision string) string {
 	return get(AMDGPU).names[norm(device)+":"+norm(revision)]
+}
+
+// BluetoothCompany returns the company for a Bluetooth SIG company ID, or "".
+func BluetoothCompany(id uint16) string {
+	return get(BT).names[fmt.Sprintf("%04X", id)]
+}
+
+// CPUCodename returns the codename and core microarchitecture for an x86
+// CPU signature, preferring a stepping-specific entry. vendor is the CPUID
+// vendor string ("GenuineIntel", "AuthenticAMD").
+func CPUCodename(vendor string, family, model, stepping int) (codename, uarch string) {
+	var v string
+	switch vendor {
+	case "GenuineIntel":
+		v = "intel"
+	case "AuthenticAMD":
+		v = "amd"
+	default:
+		return "", ""
+	}
+	names := get(CPU).names
+	key := fmt.Sprintf("%s:%x:%02x", v, family, model)
+	val, ok := names[fmt.Sprintf("%s:%d", key, stepping)]
+	if !ok {
+		val = names[key]
+	}
+	codename, uarch, _ = strings.Cut(val, "\t")
+	return codename, uarch
 }
 
 // Layers reports where a database's entries came from.

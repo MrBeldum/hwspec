@@ -64,8 +64,42 @@ func (c *collector) audio() {
 		idx, _ := strconv.Atoi(m[1])
 		card := report.SoundCard{Index: idx, ID: m[2], Driver: m[3], Name: m[4]}
 		card.Bus, card.BusAddress = busOf("/sys/class/sound/card" + m[1] + "/device")
+		card.Codecs = codecs("/proc/asound/card" + m[1])
 		c.r.Audio = append(c.r.Audio, card)
 	}
+}
+
+// codecs reads the HD Audio codec files the kernel writes for each card
+// (/proc/asound/cardN/codec#M); the kernel already names the chip.
+func codecs(cardDir string) []report.AudioCodec {
+	var out []report.AudioCodec
+	for _, f := range list(cardDir) {
+		if !strings.HasPrefix(f, "codec#") {
+			continue
+		}
+		var codec report.AudioCodec
+		for _, line := range strings.Split(readStr(cardDir+"/"+f), "\n") {
+			k, v, ok := strings.Cut(line, ":")
+			if !ok || strings.HasPrefix(line, " ") {
+				continue // indented lines describe widgets and pins
+			}
+			v = strings.TrimSpace(v)
+			switch k {
+			case "Codec":
+				codec.Name = v
+			case "Vendor Id":
+				codec.VendorID = hex4(v)
+			case "Subsystem Id":
+				codec.SubsystemID = hex4(v)
+			case "Revision Id":
+				codec.Revision = hex4(v)
+			}
+		}
+		if codec.Name != "" || codec.VendorID != "" {
+			out = append(out, codec)
+		}
+	}
+	return out
 }
 
 func (c *collector) batteries() {

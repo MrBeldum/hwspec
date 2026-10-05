@@ -66,12 +66,12 @@ jobs:
           # Dated copy, kept for history and rollback.
           gh release view "ids-$date" >/dev/null 2>&1 \
             || gh release create "ids-$date" $files $BUNDLE/manifest.json $BUNDLE/manifest.json.sig \
-                 --title "ID databases $date" --notes "$notes" --latest=false
+                 --title "ID databases $date" --notes "$notes" --latest=false --prerelease
 
           # The moving release clients read. Data first, manifest last, so a
           # client never sees a manifest describing files not yet uploaded.
           gh release view ids-latest >/dev/null 2>&1 \
             || gh release create ids-latest --title "ID databases (latest)" \
-                 --notes "Always the newest bundle; see the dated ids-* releases for history." --latest=false
+                 --notes "Always the newest bundle; see the dated ids-* releases for history." --latest=false --prerelease
           gh release upload ids-latest $files --clobber
           gh release upload ids-latest $BUNDLE/manifest.json.sig $BUNDLE/manifest.json --clobber

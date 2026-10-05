@@ -25,6 +25,10 @@ func (r *Report) Redact() {
 	for i := range r.Network {
 		r.Network[i].MAC = ""
 	}
+	for i := range r.Bluetooth {
+		// The local name usually defaults to the hostname.
+		r.Bluetooth[i].Address, r.Bluetooth[i].LocalName = "", ""
+	}
 	for i := range r.Batteries {
 		r.Batteries[i].Serial = ""
 	}

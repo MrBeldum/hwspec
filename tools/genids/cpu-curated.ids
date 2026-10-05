@@ -1,0 +1,54 @@
+# Hand-curated CPU codenames, applied on top of what genids derives from the
+# Linux kernel (intel-family.h model numbers, amd.c Zen generation ranges).
+#
+# Format: VENDOR FAMILY MODEL [STEPPINGS]<TAB>Codename<TAB>Microarchitecture
+# Family and model in hex, steppings in decimal ("10-13" or "9").
+# An empty field keeps the generated value.
+#
+# Best effort: corrections are welcome (with a source) as pull requests.
+
+# Intel: the kernel lists one name per model number, but some model numbers
+# span several codenames, told apart by stepping.
+intel 6 9e 9	Kaby Lake	Skylake
+intel 6 9e 10-13	Coffee Lake	Skylake
+intel 6 8e 9	Kaby Lake	Skylake
+intel 6 8e 10	Kaby Lake R	Skylake
+intel 6 8e 11	Whiskey Lake	Skylake
+intel 6 8e 12	Whiskey Lake / Comet Lake	Skylake
+intel 6 a5	Comet Lake	Skylake
+intel 6 a6	Comet Lake	Skylake
+
+# AMD family 17h (Zen, Zen+, Zen 2)
+amd 17 01	Summit Ridge / Naples	Zen
+amd 17 08	Pinnacle Ridge / Colfax	Zen+
+amd 17 11	Raven Ridge	Zen
+amd 17 18	Picasso	Zen+
+amd 17 20	Dali / Pollock	Zen
+amd 17 31	Rome / Castle Peak	Zen 2
+amd 17 60	Renoir	Zen 2
+amd 17 68	Lucienne	Zen 2
+amd 17 71	Matisse	Zen 2
+amd 17 90	Van Gogh	Zen 2
+amd 17 a0	Mendocino	Zen 2
+
+# AMD family 19h (Zen 3, Zen 3+, Zen 4)
+amd 19 01	Milan	Zen 3
+amd 19 08	Chagall	Zen 3
+amd 19 11	Genoa	Zen 4
+amd 19 18	Storm Peak	Zen 4
+amd 19 21	Vermeer	Zen 3
+amd 19 44	Rembrandt	Zen 3+
+amd 19 50	Cezanne / Barcelo	Zen 3
+amd 19 61	Raphael	Zen 4
+amd 19 74	Phoenix	Zen 4
+amd 19 75	Phoenix / Hawk Point	Zen 4
+amd 19 78	Phoenix 2	Zen 4
+amd 19 a0	Bergamo / Siena	Zen 4c
+
+# AMD family 1Ah (Zen 5)
+amd 1a 02	Turin	Zen 5
+amd 1a 11	Turin Dense	Zen 5c
+amd 1a 24	Strix Point	Zen 5
+amd 1a 44	Granite Ridge	Zen 5
+amd 1a 60	Krackan Point	Zen 5
+amd 1a 70	Strix Halo	Zen 5

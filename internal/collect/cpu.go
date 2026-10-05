@@ -38,6 +38,9 @@ func (c *collector) cpu() {
 		}
 	}
 	out.Microcode = cpuinfoField("microcode")
+	out.Family, _ = strconv.Atoi(cpuinfoField("cpu family"))
+	out.ModelID, _ = strconv.Atoi(cpuinfoField("model"))
+	out.Stepping, _ = strconv.Atoi(cpuinfoField("stepping"))
 	if out.Flags == nil {
 		out.Flags = strings.Fields(cpuinfoField("flags"))
 	}

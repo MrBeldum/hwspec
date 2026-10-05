@@ -40,6 +40,9 @@ fetch-ids:
 	curl -fsSL --retry 3 -o $(IDS_SRC)/oui.txt https://standards-oui.ieee.org/oui/oui.txt
 	curl -fsSL --retry 3 -o $(IDS_SRC)/decode-dimms https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/plain/eeprom/decode-dimms
 	curl -fsSL --retry 3 -o $(IDS_SRC)/amdgpu.ids https://gitlab.freedesktop.org/mesa/drm/-/raw/main/data/amdgpu.ids
+	curl -fsSL --retry 3 -o $(IDS_SRC)/bluetooth.yaml https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/company_identifiers/company_identifiers.yaml
+	curl -fsSL --retry 3 -o $(IDS_SRC)/intel-family.h https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/asm/intel-family.h
+	curl -fsSL --retry 3 -o $(IDS_SRC)/amd.c https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/kernel/cpu/amd.c
 
 gen-ids:
 	mkdir -p $(DIR)
@@ -49,6 +52,8 @@ gen-ids:
 	go run ./tools/genids gzip  $(IDS_SRC)/amdgpu.ids   $(DIR)/amdgpu.ids.gz
 	go run ./tools/genids oui   $(IDS_SRC)/oui.txt      $(DIR)/oui.ids.gz
 	go run ./tools/genids jedec $(IDS_SRC)/decode-dimms $(DIR)/jedec.ids.gz
+	go run ./tools/genids bluetooth $(IDS_SRC)/bluetooth.yaml $(DIR)/bluetooth.ids.gz
+	go run ./tools/genids cpu $(IDS_SRC)/intel-family.h $(IDS_SRC)/amd.c tools/genids/cpu-curated.ids $(DIR)/cpu.ids.gz
 	go run ./tools/genids manifest $(DIR) $(PREV)
 
 # Refresh the copies embedded in the binary.

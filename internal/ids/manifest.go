@@ -83,6 +83,7 @@ func KindForFile(name string) (Kind, bool) {
 // than this is rejected. Thresholds are well below current sizes.
 var minEntries = map[Kind]int{
 	PCI: 20000, USB: 10000, PNP: 1000, OUI: 20000, JEDEC: 1000, AMDGPU: 200,
+	BT: 2000, CPU: 300,
 }
 
 // Validate parses an uncompressed database and checks it is plausibly

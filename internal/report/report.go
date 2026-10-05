@@ -18,21 +18,22 @@ type Report struct {
 	Privileged bool `json:"privileged"`
 	Redacted   bool `json:"redacted"`
 
-	OS        OS          `json:"os"`
-	System    System      `json:"system"`
-	Board     Board       `json:"board"`
-	BIOS      BIOS        `json:"bios"`
-	CPU       CPU         `json:"cpu"`
-	Memory    Memory      `json:"memory"`
-	Storage   []Disk      `json:"storage"`
-	GPUs      []GPU       `json:"gpus"`
-	Displays  []Display   `json:"displays"`
-	Network   []NIC       `json:"network"`
-	Audio     []SoundCard `json:"audio"`
-	Batteries []Battery   `json:"batteries"`
-	Sensors   []Sensor    `json:"sensors"`
-	PCI       []PCIDevice `json:"pci"`
-	USB       []USBDevice `json:"usb"`
+	OS        OS                    `json:"os"`
+	System    System                `json:"system"`
+	Board     Board                 `json:"board"`
+	BIOS      BIOS                  `json:"bios"`
+	CPU       CPU                   `json:"cpu"`
+	Memory    Memory                `json:"memory"`
+	Storage   []Disk                `json:"storage"`
+	GPUs      []GPU                 `json:"gpus"`
+	Displays  []Display             `json:"displays"`
+	Network   []NIC                 `json:"network"`
+	Bluetooth []BluetoothController `json:"bluetooth"`
+	Audio     []SoundCard           `json:"audio"`
+	Batteries []Battery             `json:"batteries"`
+	Sensors   []Sensor              `json:"sensors"`
+	PCI       []PCIDevice           `json:"pci"`
+	USB       []USBDevice           `json:"usb"`
 
 	// Warnings lists what couldn't be read and why (e.g. permission denied).
 	Warnings []string `json:"warnings"`
@@ -89,11 +90,18 @@ type BIOS struct {
 }
 
 type CPU struct {
-	Model   string `json:"model"`
-	Vendor  string `json:"vendor"`
-	Sockets int    `json:"sockets"`
-	Cores   int    `json:"cores"`
-	Threads int    `json:"threads"`
+	Model  string `json:"model"`
+	Vendor string `json:"vendor"`
+	// x86 signature (family and model as the kernel reports them, decimal).
+	Family   int `json:"family,omitempty"`
+	ModelID  int `json:"model_id,omitempty"`
+	Stepping int `json:"stepping,omitempty"`
+	// Codename and Microarchitecture come from the cpu ID database.
+	Codename          string `json:"codename,omitempty"`
+	Microarchitecture string `json:"microarchitecture,omitempty"`
+	Sockets           int    `json:"sockets"`
+	Cores             int    `json:"cores"`
+	Threads           int    `json:"threads"`
 	// CoreTypes is set on hybrid CPUs (Intel P/E cores).
 	CoreTypes      []CoreType `json:"core_types,omitempty"`
 	MinFreqMHz     int        `json:"min_freq_mhz,omitempty"`
@@ -246,13 +254,39 @@ type NIC struct {
 	MTU        int    `json:"mtu,omitempty"`
 }
 
+type BluetoothController struct {
+	Name    string `json:"name"` // hci0
+	Address string `json:"address,omitempty"`
+	// AddressVendor is the registered owner of the address prefix.
+	AddressVendor  string `json:"address_vendor,omitempty"`
+	ManufacturerID int    `json:"manufacturer_id,omitempty"` // Bluetooth SIG company ID
+	Manufacturer   string `json:"manufacturer,omitempty"`
+	Version        string `json:"version,omitempty"` // core spec version, e.g. "5.2"
+	LocalName      string `json:"local_name,omitempty"`
+	Powered        *bool  `json:"powered,omitempty"`
+	Bus            string `json:"bus,omitempty"`
+	BusAddress     string `json:"bus_address,omitempty"`
+	Vendor         string `json:"vendor,omitempty"` // adapter's USB/PCI vendor
+	Model          string `json:"model,omitempty"`
+}
+
 type SoundCard struct {
-	Index      int    `json:"index"`
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Driver     string `json:"driver,omitempty"`
-	Bus        string `json:"bus,omitempty"`
-	BusAddress string `json:"bus_address,omitempty"`
+	Index      int          `json:"index"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	Driver     string       `json:"driver,omitempty"`
+	Bus        string       `json:"bus,omitempty"`
+	BusAddress string       `json:"bus_address,omitempty"`
+	Codecs     []AudioCodec `json:"codecs,omitempty"`
+}
+
+// AudioCodec is an HD Audio codec chip, named by the kernel.
+type AudioCodec struct {
+	Name        string `json:"name"`
+	Vendor      string `json:"vendor,omitempty"`
+	VendorID    string `json:"vendor_id"` // e.g. 14f15098: PCI vendor 14f1, device 5098
+	SubsystemID string `json:"subsystem_id,omitempty"`
+	Revision    string `json:"revision,omitempty"`
 }
 
 type Battery struct {

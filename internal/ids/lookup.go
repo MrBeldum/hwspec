@@ -48,6 +48,12 @@ func Lookup(kind Kind, id string) (name, key string, err error) {
 	case AMDGPU:
 		key = norm(id)
 		return get(AMDGPU).names[key], key, nil
+	case BT:
+		key = strings.ToUpper(norm(id))
+		return get(BT).names[key], key, nil
+	case CPU:
+		key = strings.ToLower(id)
+		return strings.ReplaceAll(get(CPU).names[key], "\t", " | "), key, nil
 	}
 	return "", "", fmt.Errorf("unknown database %q (want one of %s)", kind, kindList())
 }

@@ -43,6 +43,14 @@ func TestEmbeddedLookups(t *testing.T) {
 		{"pnp", PNPVendor("del"), "Dell Inc."},
 		{"amdgpu", AMDGPUName("1114", "C2"), "AMD Radeon 860M Graphics"},
 		{"oui", MACVendor("04:0e:3c:91:34:f4"), "HP Inc."},
+		{"bluetooth", BluetoothCompany(2), "Intel Corp."},
+		{"cpu coffee lake", cpuName("GenuineIntel", 6, 0x9e, 10), "Coffee Lake|Skylake"},
+		{"cpu kaby lake", cpuName("GenuineIntel", 6, 0x9e, 9), "Kaby Lake|Skylake"},
+		{"cpu unknown stepping", cpuName("GenuineIntel", 6, 0x9e, 99), "Kaby Lake|Skylake"},
+		{"cpu alder lake", cpuName("GenuineIntel", 6, 0x97, 2), "Alder Lake|Golden Cove / Gracemont"},
+		{"cpu raphael", cpuName("AuthenticAMD", 0x19, 0x61, 2), "Raphael|Zen 4"},
+		{"cpu zen range", cpuName("AuthenticAMD", 0x19, 0x62, 0), "|Zen 4"},
+		{"cpu other vendor", cpuName("HygonGenuine", 0x18, 0, 0), "|"},
 		{"oui local", MACVendor("02:0e:3c:91:34:f4"), ""},
 		{"oui garbage", MACVendor("zz"), ""},
 		{"missing", PCIDevice("8086", "zzzz"), ""},
@@ -144,6 +152,11 @@ pci = missing key
 }
 
 func first(name, _ string, _ bool) string { return name }
+
+func cpuName(vendor string, family, model, stepping int) string {
+	c, u := CPUCodename(vendor, family, model, stepping)
+	return c + "|" + u
+}
 
 func TestNewestSourceWins(t *testing.T) {
 	isolate(t)

@@ -42,6 +42,13 @@ func writeText(w io.Writer, r *report.Report) error {
 
 	section("CPU")
 	line("Model", "%s", r.CPU.Model)
+	if r.CPU.Codename != "" {
+		arch := r.CPU.Codename
+		if r.CPU.Microarchitecture != "" && r.CPU.Microarchitecture != r.CPU.Codename {
+			arch += " (" + r.CPU.Microarchitecture + " cores)"
+		}
+		line("Codename", "%s", arch)
+	}
 	cores := fmt.Sprintf("%d cores / %d threads", r.CPU.Cores, r.CPU.Threads)
 	if r.CPU.Sockets > 1 {
 		cores = fmt.Sprintf("%d sockets, ", r.CPU.Sockets) + cores
@@ -131,10 +138,35 @@ func writeText(w io.Writer, r *report.Report) error {
 		}
 	}
 
+	if len(r.Bluetooth) > 0 {
+		section("Bluetooth")
+		for _, b := range r.Bluetooth {
+			s := join(b.Vendor, b.Model)
+			if b.Version != "" {
+				s += ", Bluetooth " + b.Version
+			}
+			if b.Manufacturer != "" && !strings.Contains(s, strings.Fields(b.Manufacturer)[0]) {
+				s += ", chip by " + b.Manufacturer
+			}
+			if b.Powered != nil && !*b.Powered {
+				s += ", off"
+			}
+			line(b.Name, "%s", s)
+		}
+	}
+
 	if len(r.Audio) > 0 {
 		section("Audio")
 		for _, a := range r.Audio {
-			line(fmt.Sprintf("card %d", a.Index), "%s (%s)", a.Name, a.Driver)
+			s := fmt.Sprintf("%s (%s)", a.Name, a.Driver)
+			var names []string
+			for _, c := range a.Codecs {
+				names = append(names, c.Name)
+			}
+			if len(names) > 0 {
+				s += ": " + strings.Join(names, ", ")
+			}
+			line(fmt.Sprintf("card %d", a.Index), "%s", s)
 		}
 	}
 

@@ -23,6 +23,12 @@ jobs:
         with:
           go-version: stable
           cache: false # release builds never reuse a cache other workflows wrote
+      - name: Validate the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        # The tag reaches make and shell; only plain semantic versions.
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z[-pre]"; exit 1; }
       - run: make test
       - run: make release VERSION="$TAG"
         env:

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jiegui2025/hwspec/internal/ids"
 )
 
 // cpuEntry is one generated line: "intel:6:9e[:10]<TAB>Codename<TAB>Microarchitecture".
@@ -93,7 +95,18 @@ func cpu(intelPath, amdPath, curatedPath string) ([]byte, error) {
 	family := ""
 	var pending [][2]int
 	zen := 0
-	for _, line := range strings.Split(src[start:], "\n") {
+	lines := strings.Split(src[start:], "\n")
+	// A "case 0x19:" opens a family only when the next statement is the
+	// model switch; any other single case is a model.
+	opensModelSwitch := func(i int) bool {
+		for _, next := range lines[i+1:] {
+			if t := strings.TrimSpace(next); t != "" {
+				return strings.HasPrefix(t, "switch (c->x86_model)")
+			}
+		}
+		return false
+	}
+	for i, line := range lines {
 		if strings.Contains(line, "switch (c->x86_model)") {
 			continue
 		}
@@ -117,8 +130,10 @@ func cpu(intelPath, amdPath, curatedPath string) ([]byte, error) {
 			if m[2] != "" {
 				hi, _ = strconv.ParseInt(m[2], 16, 32)
 			}
-			// A single "case 0x17:" directly under switch (c->x86) is a family.
-			if m[2] == "" && amdFamily.MatchString(line) && pending == nil && lo >= 0x17 {
+			if m[2] == "" && amdFamily.MatchString(line) && opensModelSwitch(i) {
+				if len(pending) > 0 {
+					return nil, fmt.Errorf("amd.c: model cases without a Zen generation before family 0x%s", m[1])
+				}
 				family = strings.TrimLeft(m[1], "0")
 				continue
 			}
@@ -188,7 +203,7 @@ func cpu(intelPath, amdPath, curatedPath string) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("# CPU codenames: Linux kernel intel-family.h and amd.c, plus hwspec's curated list\n")
 	for _, k := range keys {
-		fmt.Fprintf(&b, "%s\t%s\t%s\n", k, out[k].codename, out[k].uarch)
+		fmt.Fprintf(&b, "%s\t%s\t%s\n", k, ids.CleanName(out[k].codename), ids.CleanName(out[k].uarch))
 	}
 	return []byte(b.String()), nil
 }
@@ -278,7 +293,7 @@ func btcompany(src []byte) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("# Bluetooth SIG company identifiers\n")
 	for _, c := range doc.Companies {
-		fmt.Fprintf(&b, "%04X\t%s\n", c.Value, strings.TrimSpace(c.Name))
+		fmt.Fprintf(&b, "%04X\t%s\n", c.Value, ids.CleanName(c.Name))
 	}
 	return []byte(b.String()), nil
 }

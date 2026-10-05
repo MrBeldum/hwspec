@@ -137,7 +137,7 @@ func jedec(src []byte) ([]byte, error) {
 	b.WriteString("# JEDEC JEP106 manufacturer IDs, from i2c-tools decode-dimms\n")
 	for bank, page := range perlPage.FindAllStringSubmatch(s, -1) {
 		for i, m := range perlString.FindAllStringSubmatch(page[1], -1) {
-			fmt.Fprintf(&b, "%d %02X\t%s\n", bank+1, i+1, strings.ReplaceAll(m[1], `\"`, `"`))
+			fmt.Fprintf(&b, "%d %02X\t%s\n", bank+1, i+1, ids.CleanName(strings.ReplaceAll(m[1], `\"`, `"`)))
 		}
 	}
 	return []byte(b.String()), nil
@@ -153,7 +153,7 @@ func oui(src []byte) ([]byte, error) {
 			continue
 		}
 		if key := strings.TrimSpace(prefix); len(key) == 6 {
-			entries[strings.ToUpper(key)] = strings.TrimSpace(name)
+			entries[strings.ToUpper(key)] = ids.CleanName(name)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -216,6 +216,15 @@ func manifest(dir, prevPath string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
+		if d := rawHeaderDate(content); d != "" && d > time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02") {
+			return fmt.Errorf("%s: header date %s is in the future; refusing to publish (tampered or broken upstream?)", name, d)
+		}
+		// A large drop in entries means a truncated or replaced upstream
+		// file. Publishing it would remove names for every user, so it
+		// needs a person to look (HWSPEC_ALLOW_SHRINK=1 to accept).
+		if p, ok := prevFile(prev, name); ok && p.Entries > 0 && entries < p.Entries*95/100 && os.Getenv("HWSPEC_ALLOW_SHRINK") != "1" {
+			return fmt.Errorf("%s: %d entries, down from %d in the previous bundle (more than 5%%); set HWSPEC_ALLOW_SHRINK=1 if this is expected", name, entries, p.Entries)
+		}
 		sum := sha256.Sum256(gz)
 		f := ids.ManifestFile{SHA256: hex.EncodeToString(sum[:]), Size: int64(len(gz)), Entries: entries}
 		f.Date = ids.HeaderDate(content)
@@ -236,6 +245,22 @@ func manifest(dir, prevPath string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "manifest.json"), append(out, '\n'), 0o644)
+}
+
+var headerDate = regexp.MustCompile(`(?m)^#\s*(?:Version|Date):\s*(\d{4})[.-](\d{2})[.-](\d{2})`)
+
+// rawHeaderDate is the file's own "# Version:"/"# Date:" header, unfiltered
+// (ids.HeaderDate ignores future dates; here they are an error).
+func rawHeaderDate(content []byte) string {
+	head := content
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	m := headerDate.FindSubmatch(head)
+	if m == nil {
+		return ""
+	}
+	return string(m[1]) + "-" + string(m[2]) + "-" + string(m[3])
 }
 
 func prevFile(m *ids.Manifest, name string) (ids.ManifestFile, bool) {

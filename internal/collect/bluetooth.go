@@ -16,8 +16,9 @@ import (
 func (c *collector) bluetooth() {
 	c.r.Bluetooth = []report.BluetoothController{}
 	for _, n := range list("/sys/class/bluetooth") {
-		// hci0 is a controller; hci0:256 entries are connections.
-		idx, err := strconv.Atoi(strings.TrimPrefix(n, "hci"))
+		// hci0 is a controller; hci0:256 entries are connections. The
+		// management API addresses controllers by a 16-bit index.
+		idx, err := strconv.ParseUint(strings.TrimPrefix(n, "hci"), 10, 16)
 		if !strings.HasPrefix(n, "hci") || err != nil {
 			continue
 		}

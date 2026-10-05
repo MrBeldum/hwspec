@@ -35,3 +35,41 @@ func TestSkipDisk(t *testing.T) {
 		}
 	}
 }
+
+// A drive reporting impossible counters (all bits set) must saturate, not
+// wrap around to a small, plausible-looking number.
+func TestNVMeCountersSaturate(t *testing.T) {
+	log := make([]byte, 512)
+	for i := 32; i < 64; i++ {
+		log[i] = 0xFF // data units read and written
+	}
+	log[32+16*5] = 7 // power cycles = 7 (offset 112)
+	h := parseNVMeSMART(log)
+	if *h.DataReadBytes != ^uint64(0) || *h.DataWrittenBytes != ^uint64(0) {
+		t.Errorf("read/written = %d/%d, want saturation", *h.DataReadBytes, *h.DataWrittenBytes)
+	}
+	if *h.PowerCycles != 7 {
+		t.Errorf("power cycles = %d, want 7", *h.PowerCycles)
+	}
+	if h.TemperatureC != nil {
+		t.Errorf("temperature %v reported for a zero (unsupported) reading", *h.TemperatureC)
+	}
+}
+
+func TestVMsAreRecognisedByTheirFirmwareIdentity(t *testing.T) {
+	for _, c := range []struct {
+		vendor, product string
+		vm              bool
+	}{
+		{"QEMU", "Standard PC (Q35 + ICH9, 2009)", true},
+		{"Microsoft Corporation", "Virtual Machine", true},
+		{"innotek GmbH", "VirtualBox", true},
+		{"Amazon EC2", "m7g.large", true},
+		{"HP", "HP EliteDesk 800 G5 Desktop Mini", false},
+		{"", "", false},
+	} {
+		if got := isVMVendor(c.vendor, c.product); got != c.vm {
+			t.Errorf("isVMVendor(%q, %q) = %v, want %v", c.vendor, c.product, got, c.vm)
+		}
+	}
+}

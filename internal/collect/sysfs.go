@@ -44,6 +44,16 @@ func readInt(path string) (int64, bool) {
 	return v, true
 }
 
+// readInt32 is readInt for values that fit in 32 bits (speeds, counts,
+// widths, kHz), so converting to int can't truncate on any platform.
+func readInt32(path string) (int, bool) {
+	v, err := strconv.ParseInt(readStr(path), 0, 32)
+	if err != nil {
+		return 0, false
+	}
+	return int(v), true
+}
+
 func readUint(path string) uint64 {
 	v, err := strconv.ParseUint(readStr(path), 10, 64)
 	if err != nil {

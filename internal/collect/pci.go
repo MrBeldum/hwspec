@@ -43,13 +43,13 @@ func pcieLink(dir string) *report.PCIeLink {
 	if speed == "" || strings.HasPrefix(speed, "Unknown") {
 		return nil
 	}
-	w, _ := readInt(dir + "current_link_width")
-	mw, _ := readInt(dir + "max_link_width")
+	w, _ := readInt32(dir + "current_link_width")
+	mw, _ := readInt32(dir + "max_link_width")
 	return &report.PCIeLink{
 		Speed:    speed,
-		Width:    int(w),
+		Width:    w,
 		MaxSpeed: readStr(dir + "max_link_speed"),
-		MaxWidth: int(mw),
+		MaxWidth: mw,
 	}
 }
 

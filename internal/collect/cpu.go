@@ -29,20 +29,25 @@ func (c *collector) cpu() {
 		}
 	}
 	if out.Model == "" {
-		// Some ARM kernels have no "model name"; fall back to what exists.
-		for _, k := range []string{"model name", "Model", "Hardware", "cpu model"} {
-			if v := cpuinfoField(k); v != "" {
+		// ARM kernels often have no "model name". "Processor" (older arm32)
+		// and "Hardware" (the SoC) describe the CPU; "Model" is the board,
+		// which belongs to System, so it isn't used here.
+		for _, k := range []string{"model name", "cpu model", "Processor", "Hardware"} {
+			if v := c.cpuinfoField(k); v != "" {
 				out.Model = v
 				break
 			}
 		}
 	}
-	out.Microcode = cpuinfoField("microcode")
-	out.Family, _ = strconv.Atoi(cpuinfoField("cpu family"))
-	out.ModelID, _ = strconv.Atoi(cpuinfoField("model"))
-	out.Stepping, _ = strconv.Atoi(cpuinfoField("stepping"))
+	if out.Vendor == "" {
+		out.Vendor = c.cpuinfoField("vendor_id")
+	}
+	out.Microcode = c.cpuinfoField("microcode")
+	out.Family, _ = strconv.Atoi(c.cpuinfoField("cpu family"))
+	out.ModelID, _ = strconv.Atoi(c.cpuinfoField("model"))
+	out.Stepping, _ = strconv.Atoi(c.cpuinfoField("stepping"))
 	if out.Flags == nil {
-		out.Flags = strings.Fields(cpuinfoField("flags"))
+		out.Flags = strings.Fields(c.cpuinfoField("flags"))
 	}
 	sort.Strings(out.Flags)
 	for _, f := range out.Flags {
@@ -51,13 +56,13 @@ func (c *collector) cpu() {
 		}
 	}
 
-	if khz, ok := readInt(cpuDir + "cpu0/cpufreq/cpuinfo_min_freq"); ok {
-		out.MinFreqMHz = int(khz / 1000)
+	if khz, ok := readInt32(cpuDir + "cpu0/cpufreq/cpuinfo_min_freq"); ok {
+		out.MinFreqMHz = khz / 1000
 	}
 	// On hybrid CPUs cpu0 may be an E-core, so take the highest max.
 	for _, cpu := range cpuDirs() {
-		if khz, ok := readInt(cpuDir + cpu + "/cpufreq/cpuinfo_max_freq"); ok && int(khz/1000) > out.MaxFreqMHz {
-			out.MaxFreqMHz = int(khz / 1000)
+		if khz, ok := readInt32(cpuDir + cpu + "/cpufreq/cpuinfo_max_freq"); ok && khz/1000 > out.MaxFreqMHz {
+			out.MaxFreqMHz = khz / 1000
 		}
 	}
 	out.ScalingDriver = readStr(cpuDir + "cpu0/cpufreq/scaling_driver")
@@ -106,15 +111,15 @@ func (c *collector) caches() []report.Cache {
 				continue
 			}
 			d := base + idx + "/"
-			level, _ := readInt(d + "level")
+			level, _ := readInt32(d + "level")
 			typ := readStr(d + "type")
 			size := parseSize(readStr(d + "size"))
-			id := strings.Join([]string{strconv.Itoa(int(level)), typ, readStr(d + "shared_cpu_list")}, "|")
+			id := strings.Join([]string{strconv.Itoa(level), typ, readStr(d + "shared_cpu_list")}, "|")
 			if seen[id] || size == 0 {
 				continue
 			}
 			seen[id] = true
-			counts[key{int(level), typ, size}]++
+			counts[key{level, typ, size}]++
 		}
 	}
 	out := []report.Cache{}

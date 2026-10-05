@@ -30,6 +30,7 @@ func (c *collector) storage() {
 			SizeBytes:          d.SizeBytes,
 			Transport:          transport(d.Name),
 			Rotational:         readStr(base+"/queue/rotational") == "1",
+			Type:               "unknown",
 			Removable:          d.IsRemovable,
 			LogicalBlockBytes:  readUint(base + "/queue/logical_block_size"),
 			PhysicalBlockBytes: d.PhysicalBlockSizeBytes,
@@ -50,14 +51,19 @@ func (c *collector) storage() {
 		if disk.Firmware == "" {
 			disk.Firmware = readStr(base + "/device/rev")
 		}
-		switch {
+		// Only claim a type the kernel gives evidence for.
+		switch rot := readStr(base + "/queue/rotational"); {
 		case disk.Transport == "nvme":
 			disk.Type = "nvme"
 		case strings.HasPrefix(d.Name, "sr"):
 			disk.Type = "optical"
-		case disk.Rotational:
+		case disk.Transport == "mmc":
+			disk.Type = "flash"
+		case disk.Transport == "virtio" || disk.Transport == "xen":
+			disk.Type = "virtual" // the backing storage is invisible to the guest
+		case rot == "1":
 			disk.Type = "hdd"
-		default:
+		case rot == "0":
 			disk.Type = "ssd"
 		}
 		for _, part := range d.Partitions {
@@ -70,9 +76,12 @@ func (c *collector) storage() {
 				MountPoint: part.MountPoint,
 			})
 		}
-		if c.privileged {
+		switch {
+		case disk.Type == "optical":
+			// no SMART on optical drives
+		case c.privileged:
 			disk.Health = c.diskHealth(d.Name, disk.Transport)
-		} else if disk.Type != "optical" {
+		default:
 			needRoot = true
 		}
 		c.r.Storage = append(c.r.Storage, disk)

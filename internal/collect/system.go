@@ -32,16 +32,19 @@ func (c *collector) osInfo() {
 	}
 	o.Init = readStr("/proc/1/comm")
 
-	o.Virtualization = "none"
+	// Only report what there is evidence for; "" means unknown.
+	flags := c.cpuinfoField("flags")
 	switch {
 	case exists("/run/.containerenv"), exists("/.dockerenv"), readStr("/run/systemd/container") != "":
 		o.Virtualization = "container"
-	case strings.Contains(" "+cpuinfoField("flags")+" ", " hypervisor "):
+	case strings.Contains(" "+flags+" ", " hypervisor "), isVMVendor(c.r.System.Vendor, c.r.System.Product):
 		o.Virtualization = "vm"
+	case flags != "": // x86 exposes the hypervisor flag, so its absence is evidence
+		o.Virtualization = "none"
 	}
 
-	o.BootMode = "bios"
-	if exists("/sys/firmware/efi") {
+	switch {
+	case exists("/sys/firmware/efi"):
 		o.BootMode = "uefi"
 		// efivars data = 4 attribute bytes + 1 value byte.
 		b, err := os.ReadFile(p("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"))
@@ -49,7 +52,24 @@ func (c *collector) osInfo() {
 			on := b[4] == 1
 			o.SecureBoot = &on
 		}
+	case exists("/sys/firmware/dmi") && (o.Arch == "x86_64" || o.Arch == "i686"):
+		// x86 firmware with SMBIOS but no EFI runtime is legacy BIOS boot.
+		// (Containers often hide /sys/firmware: then it stays unknown.)
+		o.BootMode = "bios"
 	}
+}
+
+// isVMVendor recognises the DMI identity of common hypervisors, which
+// matters on ARM where CPUs have no "hypervisor" flag.
+func isVMVendor(vendor, product string) bool {
+	id := strings.ToLower(vendor + " " + product)
+	for _, v := range []string{"qemu", "kvm", "vmware", "virtualbox", "innotek", "xen", "parallels",
+		"bochs", "amazon ec2", "google compute engine", "openstack", "virtual machine", "cloud hypervisor"} {
+		if strings.Contains(id, v) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseOSRelease(s string) map[string]string {
@@ -86,6 +106,11 @@ const dmiDir = "/sys/class/dmi/id/"
 
 func (c *collector) dmi() {
 	if !exists(dmiDir) {
+		// Device-tree boards (most ARM) name themselves there instead.
+		if model := strings.TrimRight(readStr("/proc/device-tree/model"), "\x00"); model != "" {
+			c.r.System.Product = model
+			return
+		}
 		c.warn("dmi: /sys/class/dmi/id not present (no SMBIOS firmware tables, common on ARM boards)")
 		return
 	}
@@ -133,29 +158,31 @@ func (c *collector) dmi() {
 	}
 }
 
-var cpuinfoCache map[string]string
-
-// cpuinfoField returns a field from the first processor block of /proc/cpuinfo.
-func cpuinfoField(key string) string {
-	if cpuinfoCache == nil {
-		cpuinfoCache = map[string]string{}
+// cpuinfoField returns a field from /proc/cpuinfo: the first occurrence,
+// so per-CPU fields come from the first processor block, while fields that
+// only appear in the trailing block (ARM's "Hardware", "Revision") are
+// found too.
+func (c *collector) cpuinfoField(key string) string {
+	if c.cpuinfo == nil {
+		c.cpuinfo = map[string]string{}
 		f, err := os.Open(p("/proc/cpuinfo"))
 		if err != nil {
+			c.warn("cpu: %v", err)
 			return ""
 		}
 		defer f.Close()
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
-			line := sc.Text()
-			if line == "" {
-				break // end of the first processor block
-			}
-			k, v, ok := strings.Cut(line, ":")
-			if ok {
-				cpuinfoCache[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			k, v, ok := strings.Cut(sc.Text(), ":")
+			k = strings.TrimSpace(k)
+			if _, seen := c.cpuinfo[k]; ok && !seen {
+				c.cpuinfo[k] = strings.TrimSpace(v)
 			}
 		}
+		if err := sc.Err(); err != nil {
+			c.warn("cpu: reading /proc/cpuinfo: %v", err)
+		}
 	}
-	return cpuinfoCache[key]
+	return c.cpuinfo[key]
 }

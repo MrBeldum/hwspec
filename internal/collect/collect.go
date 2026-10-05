@@ -16,6 +16,7 @@ import (
 type collector struct {
 	r          *report.Report
 	privileged bool
+	cpuinfo    map[string]string // lazily read by cpuinfoField
 }
 
 func (c *collector) warn(format string, args ...any) {
@@ -42,8 +43,8 @@ func Collect(version string) *report.Report {
 	r.Hostname, _ = os.Hostname()
 	c := &collector{r: r, privileged: r.Privileged}
 
+	c.dmi() // before osInfo, which uses DMI to recognise VMs
 	c.osInfo()
-	c.dmi()
 	c.cpu()
 	c.memory()
 	c.storage()

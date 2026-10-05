@@ -35,12 +35,12 @@ func (c *collector) network() {
 		nic.Bus, nic.BusAddress = busOf(d + "device")
 		// speed and duplex are only meaningful while the link is up;
 		// reading them on a down link fails or returns -1.
-		if v, ok := readInt(d + "speed"); ok && v > 0 {
-			nic.SpeedMbps = int(v)
+		if v, ok := readInt32(d + "speed"); ok && v > 0 {
+			nic.SpeedMbps = v
 			nic.Duplex = readStr(d + "duplex")
 		}
-		if v, ok := readInt(d + "mtu"); ok {
-			nic.MTU = int(v)
+		if v, ok := readInt32(d + "mtu"); ok {
+			nic.MTU = v
 		}
 		c.r.Network = append(c.r.Network, nic)
 	}
@@ -66,6 +66,9 @@ func (c *collector) audio() {
 		card.Bus, card.BusAddress = busOf("/sys/class/sound/card" + m[1] + "/device")
 		card.Codecs = codecs("/proc/asound/card" + m[1])
 		c.r.Audio = append(c.r.Audio, card)
+	}
+	if err := sc.Err(); err != nil {
+		c.warn("audio: reading /proc/asound/cards: %v", err)
 	}
 }
 
@@ -118,11 +121,11 @@ func (c *collector) batteries() {
 			Technology:   readStr(d + "technology"),
 			Status:       readStr(d + "status"),
 		}
-		if v, ok := readInt(d + "capacity"); ok {
-			b.CapacityPercent = int(v)
+		if v, ok := readInt32(d + "capacity"); ok {
+			b.CapacityPercent = v
 		}
-		if v, ok := readInt(d + "cycle_count"); ok {
-			b.CycleCount = int(v)
+		if v, ok := readInt32(d + "cycle_count"); ok && v >= 0 {
+			b.CycleCount = v
 		}
 		// Energy in µWh, or charge in µAh × design voltage in µV.
 		design, full := float64(readUint(d+"energy_full_design")), float64(readUint(d+"energy_full"))
@@ -133,7 +136,8 @@ func (c *collector) batteries() {
 		}
 		b.DesignWh = round(design/1e6, 2)
 		b.FullWh = round(full/1e6, 2)
-		if design > 0 {
+		// Health needs both figures; a missing one must not read as 0%.
+		if design > 0 && full > 0 {
 			b.HealthPercent = round(full/design*100, 1)
 		}
 		c.r.Batteries = append(c.r.Batteries, b)
@@ -220,11 +224,11 @@ func (c *collector) usb() {
 			Serial:     readStr(d + "serial"),
 			USBVersion: strings.TrimSpace(readStr(d + "version")),
 		}
-		if v, ok := readInt(d + "busnum"); ok {
-			dev.Bus = int(v)
+		if v, ok := readInt32(d + "busnum"); ok {
+			dev.Bus = v
 		}
-		if v, ok := readInt(d + "devnum"); ok {
-			dev.Device = int(v)
+		if v, ok := readInt32(d + "devnum"); ok {
+			dev.Device = v
 		}
 		if v, err := strconv.ParseFloat(readStr(d+"speed"), 64); err == nil {
 			dev.SpeedMbps = v

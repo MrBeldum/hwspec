@@ -1,15 +1,18 @@
 package collect
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/jiegui2025/hwspec/internal/report"
@@ -40,6 +43,19 @@ func (c *collector) diskHealth(name, transport string) *report.DiskHealth {
 }
 
 var nvmeCtrl = regexp.MustCompile(`^nvme\d+`)
+
+// runCommand runs a program with a time limit (a hung USB bridge must not
+// hang the capture). Tests replace it.
+var runCommand = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+func isExecutable(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0
+}
 
 // nvmePassthruCmd mirrors struct nvme_passthru_cmd from <linux/nvme_ioctl.h>.
 type nvmePassthruCmd struct {
@@ -81,10 +97,15 @@ func nvmeHealth(dev string) (*report.DiskHealth, error) {
 		Cdw10:     uint32(len(log)/4-1)<<16 | 0x02, // NUMDL, LID 2 = SMART / Health
 		TimeoutMS: 5000,
 	}
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), nvmeIoctlAdminCmd, uintptr(unsafe.Pointer(&cmd))) //nolint:gosec // G103: ioctl argument
+	status, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), nvmeIoctlAdminCmd, uintptr(unsafe.Pointer(&cmd))) //nolint:gosec // G103: ioctl argument
 	runtime.KeepAlive(log)
 	if errno != 0 {
 		return nil, fmt.Errorf("NVMe get-log-page: %w", errno)
+	}
+	// A positive return is the drive's NVMe status: the command was
+	// delivered but failed, and the buffer holds no log page.
+	if status != 0 {
+		return nil, fmt.Errorf("NVMe get-log-page: drive returned status 0x%x", status)
 	}
 	return parseNVMeSMART(log), nil
 }
@@ -92,12 +113,14 @@ func nvmeHealth(dev string) (*report.DiskHealth, error) {
 // parseNVMeSMART decodes the SMART / Health Information log page (NVMe base
 // spec, Log Page 02h).
 func parseNVMeSMART(b []byte) *report.DiskHealth {
-	u128 := func(off int) uint64 {
-		// 128-bit little-endian counters; clamp to uint64.
+	// 128-bit little-endian counters, scaled, saturating at the uint64
+	// maximum rather than wrapping (bogus drives report all-ones).
+	u128 := func(off int, scale int64) uint64 {
 		v := new(big.Int)
 		for i := off + 15; i >= off; i-- {
 			v.Lsh(v, 8).Or(v, big.NewInt(int64(b[i])))
 		}
+		v.Mul(v, big.NewInt(scale))
 		if !v.IsUint64() {
 			return ^uint64(0)
 		}
@@ -107,12 +130,12 @@ func parseNVMeSMART(b []byte) *report.DiskHealth {
 	spare := int(b[3])
 	used := int(b[5])
 	// Data units are thousands of 512-byte units.
-	read := u128(32) * 512000
-	written := u128(48) * 512000
-	cycles := u128(112)
-	hours := u128(128)
-	unsafeShutdowns := u128(144)
-	media := u128(160)
+	read := u128(32, 512000)
+	written := u128(48, 512000)
+	cycles := u128(112, 1)
+	hours := u128(128, 1)
+	unsafeShutdowns := u128(144, 1)
+	media := u128(160, 1)
 	h := &report.DiskHealth{
 		Source:           "nvme",
 		Passed:           &passed,
@@ -132,14 +155,26 @@ func parseNVMeSMART(b []byte) *report.DiskHealth {
 	return h
 }
 
+// smartctlDirs are the only places smartctl is taken from: this runs as
+// root, so a smartctl earlier in a user-controlled PATH must not be used.
+var smartctlDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin", "/run/current-system/sw/bin"}
+
+const smartctlTimeout = 30 * time.Second
+
 func smartctlHealth(dev string) (*report.DiskHealth, error) {
-	bin, err := exec.LookPath("smartctl")
-	if err != nil {
+	bin := ""
+	for _, d := range smartctlDirs {
+		if path := filepath.Join(d, "smartctl"); isExecutable(path) {
+			bin = path
+			break
+		}
+	}
+	if bin == "" {
 		return nil, fmt.Errorf("smartctl not installed (needed for SATA/USB drives)")
 	}
 	// smartctl's exit status is a bitmask that is non-zero for many
 	// non-fatal conditions, so judge success by whether the JSON parses.
-	out, _ := exec.Command(bin, "--json=c", "-H", "-A", "-i", dev).Output()
+	out, runErr := runCommand(smartctlTimeout, bin, "--json=c", "-H", "-A", "-i", dev)
 	var s struct {
 		SmartStatus *struct {
 			Passed bool `json:"passed"`
@@ -166,7 +201,12 @@ func smartctlHealth(dev string) (*report.DiskHealth, error) {
 		} `json:"smartctl"`
 	}
 	if err := json.Unmarshal(out, &s); err != nil {
-		return nil, fmt.Errorf("smartctl: unreadable output")
+		// No JSON at all: a timeout, a crash, or smartctl older than 7.0
+		// (which has no --json).
+		if runErr != nil {
+			return nil, fmt.Errorf("smartctl: %w (smartctl 7.0 or newer is needed)", runErr)
+		}
+		return nil, fmt.Errorf("smartctl: output is not JSON (smartctl 7.0 or newer is needed)")
 	}
 	if s.SmartStatus == nil && s.Temperature == nil && s.PowerOnTime == nil {
 		if len(s.Smartctl.Messages) > 0 {

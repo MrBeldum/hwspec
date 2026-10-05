@@ -4,6 +4,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -79,8 +80,22 @@ func blockStyle(n *yaml.Node) {
 	}
 }
 
+// ErrNotCapture is returned for valid JSON/YAML that isn't a hwspec capture.
+var ErrNotCapture = errors.New("not a hwspec capture (no tool.name \"hwspec\" and schema_version)")
+
 // Read loads a report previously written as JSON or YAML.
 func Read(data []byte) (*report.Report, error) {
+	r, err := decode(data)
+	if err != nil {
+		return nil, err
+	}
+	if r.Tool.Name != "hwspec" || r.SchemaVersion < 1 {
+		return nil, ErrNotCapture
+	}
+	return r, nil
+}
+
+func decode(data []byte) (*report.Report, error) {
 	var r report.Report
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '{' {

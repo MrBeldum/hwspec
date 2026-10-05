@@ -21,6 +21,7 @@ import (
 	"github.com/jiegui2025/hwspec/internal/output"
 	"github.com/jiegui2025/hwspec/internal/report"
 	"github.com/jiegui2025/hwspec/internal/resolve"
+	"github.com/jiegui2025/hwspec/internal/trust"
 )
 
 // version is set at build time with -ldflags "-X main.version=v1.2.3".
@@ -138,10 +139,11 @@ func writeReport(r *report.Report, outPath, format string) error {
 		_, err := os.Stdout.Write(buf.Bytes())
 		return err
 	}
-	// Serial numbers and UUIDs are for the owner's eyes only.
-	mode := os.FileMode(0o644)
-	if r.Privileged && !r.Redacted {
-		mode = 0o600
+	// Captures hold serial numbers, MAC addresses and the hostname: private
+	// unless redacted for sharing. The umask can only tighten this.
+	mode := os.FileMode(0o600)
+	if r.Redacted {
+		mode = 0o644
 	}
 	if err := writeFileAtomic(outPath, buf.Bytes(), mode); err != nil {
 		return err
@@ -151,10 +153,27 @@ func writeReport(r *report.Report, outPath, format string) error {
 }
 
 // writeFileAtomic writes to a temporary file next to path and renames it
-// into place: a full disk can't leave a truncated capture, and an existing
-// symlink at path is replaced rather than followed. Under sudo, the file
-// is given to the invoking user.
+// into place: a full disk can't leave a truncated capture, and a symlink
+// at path is replaced, never followed. The exceptions are written into:
+// the process's own streams (-o /dev/stdout, >(cmd) as /dev/fd/N,
+// /dev/null), and pipes or devices that belong to the caller, opened
+// without following symlinks. Anything else that isn't a regular file is
+// refused, so a pipe or device another user planted can't receive the
+// capture. Under sudo, a new file is given to the invoking user.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if ownStream(path) {
+		return writeInto(path, data, 0)
+	}
+	st, err := os.Lstat(path)
+	switch {
+	case err == nil && st.Mode()&os.ModeSymlink == 0 && !st.Mode().IsRegular():
+		if err := ownedByCaller(path, st); err != nil {
+			return err
+		}
+		return writeInto(path, data, syscall.O_NOFOLLOW)
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return err
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -164,7 +183,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(mode); err != nil {
+	if err := tmp.Chmod(mode &^ umask()); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -180,6 +199,69 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// ownStream reports whether path names one of this process's own output
+// streams, which are always written into (following the /dev/stdout link).
+func ownStream(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	switch abs {
+	case "/dev/stdout", "/dev/stderr", "/dev/null":
+		return true
+	}
+	return strings.HasPrefix(abs, "/dev/fd/") || strings.HasPrefix(abs, "/proc/self/fd/")
+}
+
+func writeInto(path string, data []byte, flags int) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|flags, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// ownedByCaller refuses to write into a pipe or device that belongs to
+// someone else (under sudo, the caller is the invoking user).
+func ownedByCaller(path string, st os.FileInfo) error {
+	uid := os.Geteuid()
+	if u, _, ok := sudoUser(); ok {
+		uid = u
+	}
+	return checkOwner(path, st, uid)
+}
+
+func checkOwner(path string, st os.FileInfo, uid int) error {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok || int(sys.Uid) != uid {
+		return fmt.Errorf("%s is a %s that belongs to someone else; refusing to write the capture into it", path, kindOf(st.Mode()))
+	}
+	return nil
+}
+
+func kindOf(m os.FileMode) string {
+	switch {
+	case m&os.ModeNamedPipe != 0:
+		return "pipe"
+	case m&os.ModeDevice != 0:
+		return "device"
+	case m&os.ModeSocket != 0:
+		return "socket"
+	}
+	return "special file"
+}
+
+// umask returns the process umask (reading it requires setting it).
+func umask() os.FileMode {
+	m := syscall.Umask(0o022)
+	syscall.Umask(m)
+	return os.FileMode(m)
+}
+
 // sudoUser returns the invoking user when running as root under sudo.
 func sudoUser() (uid, gid int, ok bool) {
 	if os.Geteuid() != 0 {
@@ -190,11 +272,15 @@ func sudoUser() (uid, gid int, ok bool) {
 	return u, g, err1 == nil && err2 == nil
 }
 
-// warnOverrides tells the user about mistakes in their overrides file;
-// the valid lines have still been applied.
-func warnOverrides() {
+// warnIDSources tells the user about problems with their own ID sources:
+// mistakes in the overrides file (valid lines still apply), and synced
+// databases that are skipped because their manifest can't be read.
+func warnIDSources() {
 	if err := ids.OverridesError(); err != nil {
 		fmt.Fprintf(os.Stderr, "hwspec: %s: %v (other lines still apply)\n", ids.OverridesPath(), err)
+	}
+	if _, err := ids.SyncedAt(); err != nil {
+		fmt.Fprintf(os.Stderr, "hwspec: synced ID databases skipped, their manifest is unreadable (%v); run `hwspec ids update --allow-older`\n", err)
 	}
 }
 
@@ -227,7 +313,7 @@ func capture(args []string) error {
 	} else {
 		r = collect.Collect(fullVersion())
 	}
-	warnOverrides()
+	warnIDSources()
 	if redact {
 		r.Redact()
 	}
@@ -252,7 +338,9 @@ func captureAsRoot() (*report.Report, error) {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return nil, err
 	}
-	if err := checkRootOwned(self); err != nil {
+	// Malware running as the user must not be able to swap the binary
+	// just before the user approves the root prompt.
+	if err := trust.RootOwned(self); err != nil {
 		return nil, fmt.Errorf("--full runs this binary as root, but %w. Install hwspec somewhere only root can change "+
 			"(e.g. `sudo install -m755 %s /usr/local/bin/`), or run `sudo %s capture`", err, self, self)
 	}
@@ -272,32 +360,6 @@ func captureAsRoot() (*report.Report, error) {
 		return nil, fmt.Errorf("privileged capture failed: %w", err)
 	}
 	return output.Read(stdout.Bytes())
-}
-
-// checkRootOwned refuses to elevate a binary that a non-root user could
-// replace: the file and every directory above it must be owned by root and
-// not writable by group or others. Otherwise malware running as the user
-// could swap the binary just before the user approves the root prompt.
-func checkRootOwned(path string) error {
-	for p := path; ; p = filepath.Dir(p) {
-		st, err := os.Stat(p)
-		if err != nil {
-			return err
-		}
-		sys, ok := st.Sys().(*syscall.Stat_t)
-		if !ok {
-			return fmt.Errorf("can't check the owner of %s", p)
-		}
-		if sys.Uid != 0 {
-			return fmt.Errorf("%s is owned by a non-root user", p)
-		}
-		if st.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("%s is writable by non-root users", p)
-		}
-		if p == "/" {
-			return nil
-		}
-	}
 }
 
 func isFile(path string) bool {
@@ -347,7 +409,7 @@ func show(args []string) error {
 			file, r.SchemaVersion, report.SchemaVersion)
 	}
 	resolve.Names(r)
-	warnOverrides()
+	warnIDSources()
 	if redact {
 		r.Redact()
 	}

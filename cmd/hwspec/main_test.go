@@ -26,31 +26,77 @@ func TestUnknownOutputExtensionIsAnError(t *testing.T) {
 	}
 }
 
-// --full must not elevate a binary that a non-root user could replace.
-func TestOnlyRootOwnedBinariesAreElevated(t *testing.T) {
-	userOwned := filepath.Join(t.TempDir(), "hwspec")
-	if err := os.WriteFile(userOwned, []byte("x"), 0o755); err != nil {
+// The process's own streams (-o /dev/stdout, >(cmd)) are written into.
+func TestOwnStreamsAreWrittenInto(t *testing.T) {
+	for _, p := range []string{"/dev/null", "/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"} {
+		if !ownStream(p) {
+			t.Errorf("ownStream(%q) = false", p)
+		}
+	}
+	for _, p := range []string{"/dev/shm/spec.json", "/dev/sda", "spec.json"} {
+		if ownStream(p) {
+			t.Errorf("ownStream(%q) = true", p)
+		}
+	}
+	if err := writeFileAtomic("/dev/null", []byte("x"), 0o600); err != nil {
+		t.Fatalf("writing to /dev/null: %v", err)
+	}
+	if st, err := os.Lstat("/dev/null"); err != nil || st.Mode()&os.ModeCharDevice == 0 {
+		t.Fatalf("/dev/null is no longer a character device: %v", err)
+	}
+}
+
+// A symlink someone planted at the output path is replaced, never
+// followed, even when it points at a device.
+func TestPlantedSymlinksAreReplacedNotFollowed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "spec.json")
+	if err := os.Symlink("/dev/null", p); err != nil {
 		t.Fatal(err)
 	}
-	if os.Geteuid() != 0 {
-		if err := checkRootOwned(userOwned); err == nil {
-			t.Error("a user-owned binary was accepted for elevation")
-		}
+	if err := writeFileAtomic(p, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	// The positive case needs a real root-owned system file, which build
-	// sandboxes (Nix) don't have: there /bin/sh belongs to the build user.
-	for _, sys := range []string{"/usr/bin/env", "/bin/sh"} {
-		st, err := os.Stat(sys)
-		if err != nil {
-			continue
-		}
-		if owner, ok := st.Sys().(*syscall.Stat_t); !ok || owner.Uid != 0 {
-			t.Skipf("%s isn't root-owned here (build sandbox); positive case not testable", sys)
-		}
-		if err := checkRootOwned(sys); err != nil {
-			t.Errorf("%s: %v", sys, err)
-		}
-		return
+	if st, _ := os.Lstat(p); !st.Mode().IsRegular() {
+		t.Errorf("%s is %v, want a regular file replacing the link", p, st.Mode())
+	}
+}
+
+// The caller's own pipe is written into; a pipe owned by someone else is
+// refused, so a FIFO planted in /tmp can't collect the capture.
+func TestPipesAreWrittenOnlyIfTheCallerOwnsThem(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "spec.json")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan []byte)
+	go func() {
+		b, _ := os.ReadFile(fifo)
+		got <- b
+	}()
+	if err := writeFileAtomic(fifo, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := <-got; string(b) != "{}" {
+		t.Errorf("pipe received %q", b)
+	}
+	st, err := os.Lstat(fifo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkOwner(fifo, st, os.Geteuid()+1); err == nil || !strings.Contains(err.Error(), "pipe that belongs to someone else") {
+		t.Errorf("someone else's pipe: err = %v", err)
+	}
+}
+
+func TestTheUmaskCanOnlyTightenModes(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	p := filepath.Join(t.TempDir(), "spec.json")
+	if err := writeFileAtomic(p, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v under umask 077, want 0600", st.Mode().Perm())
 	}
 }
 

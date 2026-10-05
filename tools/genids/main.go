@@ -7,7 +7,7 @@
 //	genids bluetooth <company_identifiers.yaml> <out.gz>
 //	genids cpu <intel-family.h> <amd.c> <cpu-curated.ids> <out.gz>
 //	genids manifest <dir> [previous.json]   write <dir>/manifest.json
-//	genids verify <dir>                     check <dir>/manifest.json against the files
+//	genids verify <dir> [previous.json]     re-check a bundle before signing
 //	genids sign <manifest.json>             write <manifest.json>.sig; key from
 //	                                        $HWSPEC_IDS_SIGNING_KEY (base64 seed)
 //	genids keygen <private-key-file>        new ed25519 key; prints public key
@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jiegui2025/hwspec/internal/ids"
 )
@@ -67,7 +68,11 @@ func main() {
 		}
 		err = manifest(args[0], prev)
 	case "verify":
-		err = verify(args[0])
+		prev := ""
+		if len(args) > 1 {
+			prev = args[1]
+		}
+		err = verify(args[0], prev)
 	case "sign":
 		err = sign(args[0])
 	case "keygen":
@@ -179,17 +184,9 @@ func oui(src []byte) ([]byte, error) {
 // A file without a header date keeps the date recorded for the same
 // content in the previous manifest, or gets today's date if it changed.
 func manifest(dir, prevPath string) error {
-	var prev *ids.Manifest
-	if prevPath != "" {
-		b, err := os.ReadFile(prevPath)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		if err == nil {
-			if prev, err = ids.ParseManifest(b); err != nil {
-				return fmt.Errorf("%s: %w", prevPath, err)
-			}
-		}
+	prev, err := readPrevManifest(prevPath)
+	if err != nil {
+		return err
 	}
 	m := ids.Manifest{
 		Format:      ids.ManifestFormat,
@@ -266,6 +263,26 @@ func rawHeaderDate(content []byte) string {
 	return string(m[1]) + "-" + string(m[2]) + "-" + string(m[3])
 }
 
+// readPrevManifest reads the previous bundle's manifest; a missing file
+// means there was no previous bundle.
+func readPrevManifest(path string) (*ids.Manifest, error) {
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m, err := ids.ParseManifest(b)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return m, nil
+}
+
 func prevFile(m *ids.Manifest, name string) (ids.ManifestFile, bool) {
 	if m == nil {
 		return ids.ManifestFile{}, false
@@ -274,10 +291,12 @@ func prevFile(m *ids.Manifest, name string) (ids.ManifestFile, bool) {
 	return f, ok
 }
 
-// verify re-checks a built bundle before it is signed: every file listed
-// in the manifest exists with that size and hash and parses into a
-// plausible database, and nothing unlisted is present.
-func verify(dir string) error {
+// verify re-checks a built bundle before it is signed, independently of
+// the job that built it: every file listed in the manifest exists with
+// that size and hash, parses into a plausible database, contains no
+// control characters, and isn't much smaller than in the previous bundle;
+// nothing unlisted is present; no date is in the future.
+func verify(dir, prevPath string) error {
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return err
@@ -286,6 +305,15 @@ func verify(dir string) error {
 	if err != nil {
 		return err
 	}
+	prev, err := readPrevManifest(prevPath)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if m.GeneratedAt.After(now.Add(24*time.Hour)) || m.GeneratedAt.Before(now.Add(-24*time.Hour)) {
+		return fmt.Errorf("manifest generated_at %s is not within a day of now", m.GeneratedAt.Format(time.RFC3339))
+	}
+	tomorrow := now.AddDate(0, 0, 1).Format("2006-01-02")
 	paths, _ := filepath.Glob(filepath.Join(dir, "*.ids.gz"))
 	if len(paths) != len(m.Files) {
 		return fmt.Errorf("%d database files but %d in the manifest", len(paths), len(m.Files))
@@ -317,6 +345,15 @@ func verify(dir string) error {
 		}
 		if n != f.Entries {
 			return fmt.Errorf("%s: %d entries, but the manifest says %d", name, n, f.Entries)
+		}
+		if f.Date > tomorrow {
+			return fmt.Errorf("%s: date %s is in the future", name, f.Date)
+		}
+		if bytes.ContainsFunc(content, func(r rune) bool { return r != '\n' && r != '\t' && r != '\r' && unicode.IsControl(r) }) {
+			return fmt.Errorf("%s: contains control characters", name)
+		}
+		if p, ok := prevFile(prev, name); ok && p.Entries > 0 && n < p.Entries*95/100 && os.Getenv("HWSPEC_ALLOW_SHRINK") != "1" {
+			return fmt.Errorf("%s: %d entries, down from %d in the previous bundle", name, n, p.Entries)
 		}
 	}
 	fmt.Printf("verified %d databases\n", len(m.Files))

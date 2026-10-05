@@ -100,9 +100,11 @@ func cpu(intelPath, amdPath, curatedPath string) ([]byte, error) {
 	// model switch; any other single case is a model.
 	opensModelSwitch := func(i int) bool {
 		for _, next := range lines[i+1:] {
-			if t := strings.TrimSpace(next); t != "" {
-				return strings.HasPrefix(t, "switch (c->x86_model)")
+			t := strings.TrimSpace(next)
+			if t == "" || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "//") {
+				continue // blank lines and comments
 			}
+			return strings.HasPrefix(t, "switch (c->x86_model)")
 		}
 		return false
 	}
@@ -117,7 +119,13 @@ func cpu(intelPath, amdPath, curatedPath string) ([]byte, error) {
 			}
 			for _, r := range pending {
 				for model := r[0]; model <= r[1]; model++ {
-					out[fmt.Sprintf("amd:%s:%02x", family, model)] = cpuEntry{uarch: gen}
+					key := fmt.Sprintf("amd:%s:%02x", family, model)
+					// A misparsed family would land on another family's
+					// models; never let that happen silently.
+					if prev, dup := out[key]; dup && prev.uarch != gen {
+						return nil, fmt.Errorf("amd.c: %s parsed as both %s and %s; parser out of step with the kernel source", key, prev.uarch, gen)
+					}
+					out[key] = cpuEntry{uarch: gen}
 				}
 			}
 			pending = nil

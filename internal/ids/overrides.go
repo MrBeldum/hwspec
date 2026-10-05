@@ -97,57 +97,22 @@ func parseOverrides(path string) (map[Kind]map[string]string, error) {
 // matching database uses.
 func parseOverrideLine(line string) (Kind, string, string, error) {
 	lhs, name, ok := strings.Cut(line, "=")
-	name = strings.TrimSpace(name)
+	name = cleanName(name)
 	if !ok || name == "" {
 		return "", "", "", errors.New(`expected "KIND KEY = Name"`)
 	}
-	fields := strings.Fields(lhs)
-	if len(fields) < 2 {
+	kind, id, ok := strings.Cut(strings.TrimSpace(lhs), " ")
+	if !ok || strings.TrimSpace(id) == "" {
 		return "", "", "", errors.New(`expected "KIND KEY = Name"`)
 	}
-	kind := Kind(strings.ToLower(fields[0]))
-	if _, known := specs[kind]; !known {
-		return "", "", "", fmt.Errorf("unknown kind %q", fields[0])
+	k := Kind(strings.ToLower(kind))
+	key, err := NormalizeKey(k, id)
+	if err != nil {
+		return "", "", "", err
 	}
-	key := fields[1]
-	if (kind == PCI || kind == USB) && strings.ToLower(key) == "class" {
-		if len(fields) != 3 {
-			return "", "", "", errors.New("expected a class code after \"class\"")
-		}
-		return kind, "class:" + norm(fields[2]), name, nil
-	}
-	if len(fields) != 2 {
-		return "", "", "", errors.New("the key must not contain spaces")
-	}
-	switch kind {
-	case PCI, USB, AMDGPU:
-		return kind, norm(key), name, nil
-	case BT:
-		return kind, strings.ToUpper(norm(key)), name, nil
-	case CPU:
+	if k == CPU {
 		codename, uarch, _ := strings.Cut(name, "|")
-		return kind, strings.ToLower(key), strings.TrimSpace(codename) + "\t" + strings.TrimSpace(uarch), nil
-	case PNP:
-		return kind, strings.ToUpper(key), name, nil
-	case OUI:
-		prefix, ok := ouiPrefix(key)
-		if !ok {
-			return "", "", "", fmt.Errorf("%q is not a MAC prefix", key)
-		}
-		return kind, prefix, name, nil
-	case JEDEC:
-		if b, id, isPair := strings.Cut(key, ":"); isPair {
-			var bank, code int
-			if _, err := fmt.Sscanf(b+" "+id, "%d %x", &bank, &code); err != nil {
-				return "", "", "", fmt.Errorf("%q is not BANK:ID", key)
-			}
-			return kind, jedecKey(bank, code), name, nil
-		}
-		candidates := jedecCandidates(key)
-		if len(candidates) == 0 {
-			return "", "", "", fmt.Errorf("%q is not a JEDEC code", key)
-		}
-		return kind, candidates[0], name, nil
+		name = strings.TrimSpace(codename) + "\t" + strings.TrimSpace(uarch)
 	}
-	return "", "", "", fmt.Errorf("unsupported kind %q", kind)
+	return k, key, name, nil
 }

@@ -113,10 +113,16 @@ func idsStatus() error {
 	}
 	w.Flush()
 
-	if t := ids.SyncedAt(); t.IsZero() {
+	switch t, err := ids.SyncedAt(); {
+	case err != nil:
+		fmt.Printf("\nSynced databases are not used: their manifest is unreadable (%v).\nRun `hwspec ids update --allow-older` to replace them.\n", err)
+	case t.IsZero():
 		fmt.Println("\nNot synced yet. `hwspec ids update` downloads the latest databases (signed, ~1 MB).")
-	} else {
+	default:
 		fmt.Printf("\nSynced bundle: built %s, in %s\n", t.Format("2006-01-02"), ids.SyncedDir())
+	}
+	if err := ids.OverridesError(); err != nil {
+		fmt.Printf("Overrides file has problems (valid lines still apply): %v\n", err)
 	}
 
 	path := ids.OverridesPath()

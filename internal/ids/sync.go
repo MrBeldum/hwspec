@@ -101,10 +101,20 @@ func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := syncedManifest()
-	if local != nil && remote.GeneratedAt.Before(local.GeneratedAt) && !opt.AllowOlder {
-		return nil, fmt.Errorf("published bundle (%s) is older than the synced one (%s); refusing to roll back",
-			remote.GeneratedAt.Format(time.RFC3339), local.GeneratedAt.Format(time.RFC3339))
+	local, err := syncedManifest()
+	if err != nil && !opt.AllowOlder {
+		// Without the local manifest we can't tell whether this is a rollback.
+		return nil, fmt.Errorf("synced manifest unreadable (%w); rerun with --allow-older to replace the synced databases", err)
+	}
+	if !opt.AllowOlder {
+		if local != nil && remote.GeneratedAt.Before(local.GeneratedAt) {
+			return nil, fmt.Errorf("published bundle (%s) is older than the synced one (%s); refusing to roll back",
+				remote.GeneratedAt.Format(time.RFC3339), local.GeneratedAt.Format(time.RFC3339))
+		}
+		if emb := embeddedManifest(); emb != nil && remote.GeneratedAt.Before(emb.GeneratedAt) {
+			return nil, fmt.Errorf("published bundle (%s) is older than the databases built into hwspec (%s); nothing to update",
+				remote.GeneratedAt.Format(time.RFC3339), emb.GeneratedAt.Format(time.RFC3339))
+		}
 	}
 
 	names := make([]string, 0, len(remote.Files))
@@ -165,27 +175,59 @@ func Update(ctx context.Context, opt UpdateOptions) ([]FileUpdate, error) {
 	if err := os.MkdirAll(syncedDir, 0o750); err != nil {
 		return nil, err
 	}
-	for name, gz := range downloads {
-		if err := writeAtomic(filepath.Join(syncedDir, name), gz); err != nil {
+	var written []string
+	install := func(name string, data []byte) error {
+		if err := writeAtomic(filepath.Join(syncedDir, name), data); err != nil {
+			return &InstallError{Written: written, Err: err}
+		}
+		written = append(written, name)
+		return nil
+	}
+	sorted := make([]string, 0, len(downloads))
+	for name := range downloads {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		if err := install(name, downloads[name]); err != nil {
 			return nil, err
 		}
 	}
-	if err := writeAtomic(filepath.Join(syncedDir, "manifest.json.sig"), sig); err != nil {
+	if err := install("manifest.json.sig", sig); err != nil {
 		return nil, err
 	}
-	if err := writeAtomic(filepath.Join(syncedDir, "manifest.json"), manifestBytes); err != nil {
+	if err := install("manifest.json", manifestBytes); err != nil {
 		return nil, err
 	}
 	Reset()
 	return results, nil
 }
 
-// SyncedAt reports when the synced bundle was built, or zero if none.
-func SyncedAt() time.Time {
-	if m := syncedManifest(); m != nil {
-		return m.GeneratedAt
+// InstallError is returned when installing failed after verification, so
+// some files may already have been replaced. Until a later update succeeds,
+// the previous manifest keeps describing them; hwspec then dates them by it.
+type InstallError struct {
+	Written []string
+	Err     error
+}
+
+func (e *InstallError) Error() string {
+	if len(e.Written) == 0 {
+		return fmt.Sprintf("installing failed before any file was replaced: %v", e.Err)
 	}
-	return time.Time{}
+	return fmt.Sprintf("installing failed after replacing %s: %v", strings.Join(e.Written, ", "), e.Err)
+}
+
+func (e *InstallError) Unwrap() error { return e.Err }
+
+// SyncedAt reports when the synced bundle was built: zero if nothing has
+// been synced, or an error if the saved manifest can't be read.
+func SyncedAt() (time.Time, error) {
+	m, err := syncedManifest()
+	if err != nil || m == nil {
+		return time.Time{}, err
+	}
+	return m.GeneratedAt, nil
 }
 
 func sha(b []byte) string {

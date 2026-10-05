@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/jiegui2025/hwspec/internal/report"
+	"github.com/jiegui2025/hwspec/internal/trust"
 )
 
 // diskHealth reads SMART data (root only). NVMe drives are queried directly
@@ -157,14 +158,15 @@ func parseNVMeSMART(b []byte) *report.DiskHealth {
 
 // smartctlDirs are the only places smartctl is taken from: this runs as
 // root, so a smartctl earlier in a user-controlled PATH must not be used.
-var smartctlDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin", "/run/current-system/sw/bin"}
+var smartctlDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin", "/run/current-system/sw/bin"}
 
 const smartctlTimeout = 30 * time.Second
 
 func smartctlHealth(dev string) (*report.DiskHealth, error) {
 	bin := ""
 	for _, d := range smartctlDirs {
-		if path := filepath.Join(d, "smartctl"); isExecutable(path) {
+		// Only a smartctl that root alone can change.
+		if path := filepath.Join(d, "smartctl"); isExecutable(path) && trust.RootOwned(path) == nil {
 			bin = path
 			break
 		}

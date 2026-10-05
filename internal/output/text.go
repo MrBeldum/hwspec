@@ -90,7 +90,11 @@ func writeText(w io.Writer, r *report.Report) error {
 	if len(r.Storage) > 0 {
 		section("Storage")
 		for _, d := range r.Storage {
-			s := join(d.Model, bytesStr(d.SizeBytes), d.Type)
+			typ := d.Type
+			if typ == "unknown" {
+				typ = ""
+			}
+			s := join(d.Model, bytesStr(d.SizeBytes), typ)
 			if d.Transport != d.Type {
 				s += " via " + d.Transport
 			}

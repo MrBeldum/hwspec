@@ -52,11 +52,19 @@ func (c *collector) osInfo() {
 			on := b[4] == 1
 			o.SecureBoot = &on
 		}
-	case exists("/sys/firmware/dmi") && (o.Arch == "x86_64" || o.Arch == "i686"):
+	case exists("/sys/firmware/dmi") && isX86(o.Arch):
 		// x86 firmware with SMBIOS but no EFI runtime is legacy BIOS boot.
 		// (Containers often hide /sys/firmware: then it stays unknown.)
 		o.BootMode = "bios"
 	}
+}
+
+func isX86(arch string) bool {
+	switch arch {
+	case "x86_64", "i386", "i486", "i586", "i686":
+		return true
+	}
+	return false
 }
 
 // isVMVendor recognises the DMI identity of common hypervisors, which

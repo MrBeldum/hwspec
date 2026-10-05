@@ -7,6 +7,7 @@
 //	genids bluetooth <company_identifiers.yaml> <out.gz>
 //	genids cpu <intel-family.h> <amd.c> <cpu-curated.ids> <out.gz>
 //	genids manifest <dir> [previous.json]   write <dir>/manifest.json
+//	genids verify <dir>                     check <dir>/manifest.json against the files
 //	genids sign <manifest.json>             write <manifest.json>.sig; key from
 //	                                        $HWSPEC_IDS_SIGNING_KEY (base64 seed)
 //	genids keygen <private-key-file>        new ed25519 key; prints public key
@@ -65,6 +66,8 @@ func main() {
 			prev = args[1]
 		}
 		err = manifest(args[0], prev)
+	case "verify":
+		err = verify(args[0])
 	case "sign":
 		err = sign(args[0])
 	case "keygen":
@@ -269,6 +272,55 @@ func prevFile(m *ids.Manifest, name string) (ids.ManifestFile, bool) {
 	}
 	f, ok := m.Files[name]
 	return f, ok
+}
+
+// verify re-checks a built bundle before it is signed: every file listed
+// in the manifest exists with that size and hash and parses into a
+// plausible database, and nothing unlisted is present.
+func verify(dir string) error {
+	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	m, err := ids.ParseManifest(b)
+	if err != nil {
+		return err
+	}
+	paths, _ := filepath.Glob(filepath.Join(dir, "*.ids.gz"))
+	if len(paths) != len(m.Files) {
+		return fmt.Errorf("%d database files but %d in the manifest", len(paths), len(m.Files))
+	}
+	for name, f := range m.Files {
+		kind, ok := ids.KindForFile(name)
+		if !ok {
+			return fmt.Errorf("%s: not a known database file", name)
+		}
+		gz, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(gz)
+		if int64(len(gz)) != f.Size || hex.EncodeToString(sum[:]) != f.SHA256 {
+			return fmt.Errorf("%s: size or SHA-256 differs from the manifest", name)
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(gz))
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		content, err := io.ReadAll(zr)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		n, err := ids.Validate(kind, content)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if n != f.Entries {
+			return fmt.Errorf("%s: %d entries, but the manifest says %d", name, n, f.Entries)
+		}
+	}
+	fmt.Printf("verified %d databases\n", len(m.Files))
+	return nil
 }
 
 func sign(manifestPath string) error {

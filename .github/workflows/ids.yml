@@ -3,6 +3,14 @@ name: ID databases
 # Rebuilds the hardware ID database bundle from upstream every week and
 # publishes it, signed, as the `ids-latest` release that `hwspec ids update`
 # downloads. Each published bundle is also kept as a dated release.
+#
+#   build   (read-only, no secrets)   fetch upstream, validate, compare with
+#                                      the last bundle, upload as an artifact
+#   publish (ids-signing environment) re-verify the artifact, sign, release
+#
+# The signing key lives in the `ids-signing` environment, which only the
+# main branch can use, and only the publish job, which runs no upstream
+# data processing beyond re-verification, sees it.
 
 on:
   schedule:
@@ -10,13 +18,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency: ids
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
     env:
       GH_TOKEN: ${{ github.token }}
       BUNDLE: build/ids-bundle
@@ -25,8 +35,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+          cache: false # never reuse a cache other workflows could have written
 
-      - name: Fetch upstream sources
+      - name: Fetch upstream sources (HTTPS only)
         run: make fetch-ids
 
       - name: Previous manifest
@@ -35,7 +46,7 @@ jobs:
           gh release download ids-latest -p manifest.json -O build/prev-manifest.json \
             || echo "No previous bundle; publishing the first one."
 
-      - name: Build and validate bundle
+      - name: Build, validate and compare with the previous bundle
         run: make gen-ids DIR=$BUNDLE PREV=build/prev-manifest.json
 
       - name: Skip if nothing changed
@@ -50,14 +61,43 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Sign
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.diff.outputs.changed == 'true'
+        with:
+          name: ids-bundle
+          path: build/ids-bundle/
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment: ids-signing
+    permissions:
+      contents: write # create and update the ids-* releases
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUNDLE: build/ids-bundle
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ids-bundle
+          path: build/ids-bundle
+
+      - name: Re-verify the bundle before signing
+        run: go run ./tools/genids verify $BUNDLE
+
+      - name: Sign
         env:
           HWSPEC_IDS_SIGNING_KEY: ${{ secrets.HWSPEC_IDS_SIGNING_KEY }}
         run: go run ./tools/genids sign $BUNDLE/manifest.json
 
       - name: Publish
-        if: steps.diff.outputs.changed == 'true'
         run: |
           date=$(date -u +%Y.%m.%d)
           notes="Hardware ID databases built from upstream on $date. Installed by \`hwspec ids update\`; see manifest.json for per-database dates and counts."

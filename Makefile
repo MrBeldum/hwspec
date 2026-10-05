@@ -1,5 +1,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-PREFIX  ?= $(HOME)/.local
+# A root-owned location: `capture --full` refuses to run a binary that a
+# non-root user could replace. Build as yourself, install with sudo:
+#   make build && sudo make install
+PREFIX  ?= /usr/local
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # CGO off gives a fully static binary that runs on any x86_64/arm64 distro,
@@ -33,7 +36,8 @@ release:
 	done
 	@cd build && sha256sum hwspec-$(VERSION)-*.tar.gz > SHA256SUMS
 
-install: build
+install:
+	@test -x build/hwspec || { echo "run 'make build' first (as yourself), then 'sudo make install'"; exit 1; }
 	install -Dm755 build/hwspec $(DESTDIR)$(PREFIX)/bin/hwspec
 
 # ID databases. fetch-ids downloads upstream sources; gen-ids converts them
@@ -44,14 +48,16 @@ PREV    ?= $(DIR)/manifest.json
 
 # fetch(file, url[, mirror]): retry, then fall back to a mirror. hwdata
 # (github.com/vcrhonek/hwdata) mirrors pci.ids, usb.ids and oui.txt.
-CURL  := curl -fsSL --retry 4 --retry-all-errors --retry-delay 5 --connect-timeout 20
+# HTTPS only, including redirects: the output is signed and shipped.
+CURL  := curl -fsSL --proto '=https' --proto-redir '=https' --retry 4 --retry-all-errors --retry-delay 5 --connect-timeout 20
 HWDATA := https://raw.githubusercontent.com/vcrhonek/hwdata/master
 fetch = $(CURL) -o $(IDS_SRC)/$(1) $(2) $(if $(3),|| { echo "falling back to $(3)"; $(CURL) -o $(IDS_SRC)/$(1) $(3); })
 
 fetch-ids:
 	mkdir -p $(IDS_SRC)
 	$(call fetch,pci.ids,https://pci-ids.ucw.cz/v2.2/pci.ids,$(HWDATA)/pci.ids)
-	$(call fetch,usb.ids,http://www.linux-usb.org/usb.ids,$(HWDATA)/usb.ids)
+	# linux-usb.org has no valid HTTPS certificate; hwdata mirrors it.
+	$(call fetch,usb.ids,$(HWDATA)/usb.ids)
 	$(call fetch,pnp.ids,$(HWDATA)/pnp.ids)
 	$(call fetch,oui.txt,https://standards-oui.ieee.org/oui/oui.txt,$(HWDATA)/oui.txt)
 	$(call fetch,decode-dimms,https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/plain/eeprom/decode-dimms)

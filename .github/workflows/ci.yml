@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   build:
     runs-on: ubuntu-latest
@@ -131,10 +131,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+  # PRs are rebase-merged, so every commit lands on main as written.
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Every commit follows Conventional Commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-commits.sh "$BASE" "$HEAD"
+
   # The single required check for branch protection.
   ci-ok:
     if: always()
-    needs: [lint, test, vulncheck, build, distros, nix, pr-title]
+    needs: [lint, test, vulncheck, build, distros, nix, pr-title, commits]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed (pr-title may be skipped outside PRs)

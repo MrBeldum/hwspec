@@ -181,12 +181,41 @@ var formFactors = map[byte]string{
 	0x10: "Die", 0x11: "CAMM",
 }
 
-// MemoryDevices decodes type 17 (Memory Device) entries, including empty slots.
+// Handle is the structure's handle, which other structures refer to.
+func (s *Structure) Handle() uint16 {
+	h, _ := s.u16(0x02)
+	return h
+}
+
+// systemArrays returns the handles of type 16 arrays used for system
+// memory, and whether the table has any type 16 at all.
+func systemArrays(structs []Structure) (handles map[uint16]bool, anyArrays bool) {
+	handles = map[uint16]bool{}
+	for i := range structs {
+		s := &structs[i]
+		if s.Type != 16 {
+			continue
+		}
+		anyArrays = true
+		if use, ok := s.u8(0x05); ok && use == 0x03 {
+			handles[s.Handle()] = true
+		}
+	}
+	return handles, anyArrays
+}
+
+// MemoryDevices decodes type 17 (Memory Device) entries, including empty
+// slots, that belong to system memory. Devices in other arrays (video
+// memory, flash) are left out; firmware without type 16 arrays keeps all.
 func MemoryDevices(structs []Structure) []MemoryDevice {
+	system, anyArrays := systemArrays(structs)
 	var out []MemoryDevice
 	for i := range structs {
 		s := &structs[i]
 		if s.Type != 17 {
+			continue
+		}
+		if parent, ok := s.u16(0x04); anyArrays && (!ok || !system[parent]) {
 			continue
 		}
 		d := MemoryDevice{

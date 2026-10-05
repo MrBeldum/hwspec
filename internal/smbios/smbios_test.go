@@ -22,8 +22,9 @@ func structure(typ byte, length int, set func(f []byte), strs ...string) []byte 
 
 func testTable() []byte {
 	var t []byte
-	// Type 16: 2 slots, 64 GiB max, no ECC.
+	// Type 16: 2 slots, 64 GiB max, no ECC. Handle 0x1000.
 	t = append(t, structure(16, 0x17, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x02:], 0x1000)
 		f[0x05] = 0x03
 		f[0x06] = 0x03
 		binary.LittleEndian.PutUint32(f[0x07:], 64<<20) // KiB
@@ -31,6 +32,7 @@ func testTable() []byte {
 	})...)
 	// Type 17: 16 GiB DDR4 SODIMM.
 	t = append(t, structure(17, 0x28, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x04:], 0x1000)
 		binary.LittleEndian.PutUint16(f[0x08:], 64)
 		binary.LittleEndian.PutUint16(f[0x0A:], 64)
 		binary.LittleEndian.PutUint16(f[0x0C:], 16384) // MiB
@@ -45,16 +47,27 @@ func testTable() []byte {
 	}, "DIMM 1", "BANK 0", "Samsung", "12345678", "M471A2K43DB1-CTD  ")...)
 	// Type 17: empty slot with placeholder strings.
 	t = append(t, structure(17, 0x28, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x04:], 0x1000)
 		f[0x10], f[0x17] = 1, 2
 	}, "DIMM 2", "Not Specified")...)
+	// A video-memory array (use 0x04) with a 16 MiB chip: not system RAM.
+	t = append(t, structure(16, 0x17, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x02:], 0x2000)
+		f[0x05] = 0x04
+	})...)
+	t = append(t, structure(17, 0x28, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x04:], 0x2000)
+		binary.LittleEndian.PutUint16(f[0x0C:], 16)
+		f[0x10] = 1
+	}, "VRAM")...)
 	t = append(t, structure(127, 4, func([]byte) {})...)
 	return t
 }
 
 func TestMemory(t *testing.T) {
 	structs := Parse(testTable())
-	if len(structs) != 4 {
-		t.Fatalf("parsed %d structures, want 4", len(structs))
+	if len(structs) != 6 {
+		t.Fatalf("parsed %d structures, want 6", len(structs))
 	}
 
 	arrays := MemoryArrays(structs)
@@ -77,6 +90,20 @@ func TestMemory(t *testing.T) {
 	}
 	if devs[1].SizeBytes != 0 || devs[1].Manufacturer != "" || devs[1].Locator != "DIMM 2" {
 		t.Errorf("empty slot = %+v", devs[1])
+	}
+}
+
+// Firmware that omits type 16 arrays still lists its modules.
+func TestMemoryDevicesWithoutArrays(t *testing.T) {
+	var table []byte
+	table = append(table, structure(17, 0x28, func(f []byte) {
+		binary.LittleEndian.PutUint16(f[0x0C:], 8192)
+		f[0x10] = 1
+	}, "SODIMM0")...)
+	table = append(table, structure(127, 4, func([]byte) {})...)
+	devs := MemoryDevices(Parse(table))
+	if len(devs) != 1 || devs[0].SizeBytes != 8<<30 {
+		t.Errorf("devices = %+v, want one 8 GiB module", devs)
 	}
 }
 

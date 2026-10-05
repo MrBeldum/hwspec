@@ -59,6 +59,7 @@ func Collect(version string) *report.Report {
 	c.usb()
 
 	resolve.Names(r)
+	r.Sanitize() // strings from hardware and firmware are untrusted
 
 	// Keep empty lists as [] rather than null in JSON.
 	if r.Warnings == nil {

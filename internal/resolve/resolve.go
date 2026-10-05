@@ -103,9 +103,9 @@ func Names(r *report.Report) {
 		}
 	}
 
-	if r.Tool.IDDatabases == nil {
-		r.Tool.IDDatabases = map[string]string{}
-	}
+	// Rebuilt, not merged: the names now come from these sources, and a
+	// saved capture's old entries (possibly with paths) must not linger.
+	r.Tool.IDDatabases = map[string]string{}
 	for k, v := range ids.Loaded() {
 		r.Tool.IDDatabases[string(k)] = v
 	}

@@ -64,7 +64,11 @@ func idsUpdate(args []string) error {
 		DryRun:     check,
 		AllowOlder: allowOlder,
 	})
-	if err != nil {
+	var partial *ids.InstallError
+	switch {
+	case errors.As(err, &partial):
+		return fmt.Errorf("update partly installed: %w; run `hwspec ids update` again to finish", err)
+	case err != nil:
 		return fmt.Errorf("update failed, nothing changed: %w", err)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -87,6 +91,11 @@ func idsUpdate(args []string) error {
 		fmt.Println("\nAlready up to date.")
 	default:
 		fmt.Printf("\nInstalled %d databases into %s.\n", changed, ids.SyncedDir())
+	}
+	// Bundles are published weekly; a much older one means publishing has
+	// stopped (or a mirror is stale).
+	if at, err := ids.SyncedAt(); err == nil && !at.IsZero() && time.Since(at) > 60*24*time.Hour {
+		fmt.Fprintf(os.Stderr, "hwspec: warning: the newest published bundle is from %s; the ID databases may be stale\n", at.Format("2006-01-02"))
 	}
 	return nil
 }

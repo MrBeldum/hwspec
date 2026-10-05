@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/jiegui2025/hwspec/internal/report"
 )
@@ -35,19 +36,24 @@ func writeText(w io.Writer, r *report.Report) error {
 	if r.OS.SecureBoot != nil {
 		sb = map[bool]string{true: ", Secure Boot on", false: ", Secure Boot off"}[*r.OS.SecureBoot]
 	}
-	line("OS", "%s, kernel %s (%s, %s%s)", r.OS.PrettyName, r.OS.Kernel, r.OS.Arch, r.OS.BootMode, sb)
-	if r.OS.Virtualization != "none" {
+	boot := r.OS.BootMode
+	if boot == "" {
+		boot = "boot mode unknown"
+	}
+	line("OS", "%s, kernel %s (%s, %s%s)", r.OS.PrettyName, r.OS.Kernel, r.OS.Arch, boot, sb)
+	if r.OS.Virtualization != "none" && r.OS.Virtualization != "" {
 		line("Runs in", "%s", r.OS.Virtualization)
 	}
 
 	section("CPU")
 	line("Model", "%s", r.CPU.Model)
-	if r.CPU.Codename != "" {
-		arch := r.CPU.Codename
-		if r.CPU.Microarchitecture != "" && r.CPU.Microarchitecture != r.CPU.Codename {
-			arch += " (" + r.CPU.Microarchitecture + " cores)"
-		}
-		line("Codename", "%s", arch)
+	switch c, u := r.CPU.Codename, r.CPU.Microarchitecture; {
+	case c != "" && u != "" && u != c:
+		line("Codename", "%s (%s cores)", c, u)
+	case c != "":
+		line("Codename", "%s", c)
+	case u != "":
+		line("Cores are", "%s", u)
 	}
 	cores := fmt.Sprintf("%d cores / %d threads", r.CPU.Cores, r.CPU.Threads)
 	if r.CPU.Sockets > 1 {
@@ -145,7 +151,7 @@ func writeText(w io.Writer, r *report.Report) error {
 			if b.Version != "" {
 				s += ", Bluetooth " + b.Version
 			}
-			if b.Manufacturer != "" && !strings.Contains(s, strings.Fields(b.Manufacturer)[0]) {
+			if f := strings.Fields(b.Manufacturer); len(f) > 0 && !strings.Contains(s, f[0]) {
 				s += ", chip by " + b.Manufacturer
 			}
 			if b.Powered != nil && !*b.Powered {
@@ -173,8 +179,21 @@ func writeText(w io.Writer, r *report.Report) error {
 	if len(r.Batteries) > 0 {
 		section("Battery")
 		for _, bt := range r.Batteries {
-			line(bt.Name, "%s, %.1f of %.1f Wh design (%.0f%% health), %d cycles",
-				join(bt.Manufacturer, bt.Model), bt.FullWh, bt.DesignWh, bt.HealthPercent, bt.CycleCount)
+			// Only figures the battery reported; a missing one isn't zero.
+			parts := []string{join(bt.Manufacturer, bt.Model)}
+			if bt.FullWh > 0 && bt.DesignWh > 0 {
+				parts = append(parts, fmt.Sprintf("%.1f of %.1f Wh design", bt.FullWh, bt.DesignWh))
+			}
+			if bt.HealthPercent > 0 {
+				parts = append(parts, fmt.Sprintf("%.0f%% health", bt.HealthPercent))
+			}
+			if bt.CycleCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d cycles", bt.CycleCount))
+			}
+			if bt.CapacityPercent > 0 {
+				parts = append(parts, fmt.Sprintf("%d%% charged", bt.CapacityPercent))
+			}
+			line(bt.Name, "%s", strings.Join(parts, ", "))
 		}
 	}
 
@@ -193,8 +212,21 @@ func writeText(w io.Writer, r *report.Report) error {
 			fmt.Fprintf(&b, "  - %s\n", warn)
 		}
 	}
-	_, err := io.WriteString(w, b.String())
+	_, err := io.WriteString(w, terminalSafe(b.String()))
 	return err
+}
+
+// terminalSafe drops control characters other than newlines, so names from
+// devices, captures or ID databases can't carry terminal escape sequences
+// (clearing the screen, rewriting the clipboard via OSC 52, ...).
+func terminalSafe(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func join(parts ...string) string {

@@ -92,6 +92,7 @@ func Read(data []byte) (*report.Report, error) {
 	if r.Tool.Name != "hwspec" || r.SchemaVersion < 1 {
 		return nil, ErrNotCapture
 	}
+	r.Sanitize() // a shared capture is untrusted input
 	return r, nil
 }
 

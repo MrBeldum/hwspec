@@ -13,7 +13,7 @@ var systemMounts = map[string]bool{
 
 // macInterfaceName matches names udev derives from the MAC address
 // (enx001122334455, wlx…), which would leak the redacted MAC.
-var macInterfaceName = regexp.MustCompile(`^(enx|wlx)[0-9a-f]{12}$`)
+var macInterfaceName = regexp.MustCompile(`^(enx|wlx|wwx)[0-9a-f]{12}$`)
 
 // Redact clears identifiers that tie a report to one physical machine or
 // person (serial numbers, UUIDs, MAC addresses, hostname), so the file can be

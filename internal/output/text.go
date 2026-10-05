@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jiegui2025/hwspec/internal/report"
 )
@@ -25,7 +27,7 @@ func writeText(w io.Writer, r *report.Report) error {
 	b.WriteString("\n")
 
 	section("System")
-	line("Machine", "%s", join(r.System.Vendor, r.System.Product, r.System.Version))
+	line("Machine", "%s", machine(r.System))
 	if r.System.ChassisType != "" {
 		line("Chassis", "%s", r.System.ChassisType)
 	}
@@ -195,6 +197,29 @@ func writeText(w io.Writer, r *report.Report) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// machine names the system for the text output. Many firmwares put the vendor
+// at the start of the DMI product name too (vendor "HP", product "HP EliteDesk
+// 800 G5 Desktop Mini"), so the vendor is left out when the product already
+// starts with it as a whole word, ignoring case.
+func machine(s report.System) string {
+	vendor := strings.TrimSpace(s.Vendor)
+	if hasWordPrefixFold(strings.TrimSpace(s.Product), vendor) {
+		vendor = ""
+	}
+	return join(vendor, s.Product, s.Version)
+}
+
+// hasWordPrefixFold reports whether s starts with prefix, ignoring case, and
+// the prefix ends at a word boundary: "HP EliteDesk" starts with "hp", but
+// "HPE ProLiant" does not.
+func hasWordPrefixFold(s, prefix string) bool {
+	if prefix == "" || len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(s[len(prefix):])
+	return next == utf8.RuneError || !unicode.IsLetter(next) && !unicode.IsDigit(next)
 }
 
 func join(parts ...string) string {

@@ -71,3 +71,36 @@ func TestBytesStr(t *testing.T) {
 		}
 	}
 }
+
+func TestMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sys  report.System
+		want string
+	}{
+		{"product repeats the vendor", report.System{Vendor: "HP", Product: "HP EliteDesk 800 G5 Desktop Mini"}, "HP EliteDesk 800 G5 Desktop Mini"},
+		{"repeat in another case", report.System{Vendor: "LENOVO", Product: "Lenovo ThinkCentre M720q"}, "Lenovo ThinkCentre M720q"},
+		{"product is only the vendor", report.System{Vendor: "Framework", Product: "framework"}, "framework"},
+		{"vendor not repeated", report.System{Vendor: "Dell Inc.", Product: "OptiPlex 7090", Version: "1.0"}, "Dell Inc. OptiPlex 7090 1.0"},
+		{"product starts with a longer word", report.System{Vendor: "HP", Product: "HPE ProLiant"}, "HP HPE ProLiant"},
+		{"padding around the vendor", report.System{Vendor: " HP ", Product: "HP Z2 G9"}, "HP Z2 G9"},
+		{"no vendor", report.System{Product: "Z2 G9", Version: "1"}, "Z2 G9 1"},
+		{"nothing known", report.System{}, "unknown"},
+	} {
+		if got := machine(tc.sys); got != tc.want {
+			t.Errorf("%s: machine(%+v) = %q, want %q", tc.name, tc.sys, got, tc.want)
+		}
+	}
+}
+
+func TestTextMachineLineDoesNotRepeatVendor(t *testing.T) {
+	r := sample()
+	r.System = report.System{Vendor: "HP", Product: "HP EliteDesk 800 G5 Desktop Mini"}
+	var buf bytes.Buffer
+	if err := Write(&buf, r, "text"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "Machine    HP EliteDesk 800 G5 Desktop Mini\n") {
+		t.Errorf("Machine line repeats or drops the vendor:\n%s", buf.String())
+	}
+}

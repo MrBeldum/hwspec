@@ -22,8 +22,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+          cache: false # release builds never reuse a cache other workflows wrote
       - run: make test
-      - run: make release VERSION=${{ github.ref_name }}
+      - run: make release VERSION="$TAG"
+        env:
+          TAG: ${{ github.ref_name }}
       - name: Attest build provenance (verify with `gh attestation verify`)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -31,6 +34,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }} # via env, never interpolated into the script
         run: |
-          gh release create "${{ github.ref_name }}" build/hwspec-*.tar.gz build/SHA256SUMS \
-            --title "hwspec ${{ github.ref_name }}" --generate-notes --verify-tag --latest
+          gh release create "$TAG" build/hwspec-*.tar.gz build/SHA256SUMS \
+            --title "hwspec $TAG" --generate-notes --verify-tag --latest

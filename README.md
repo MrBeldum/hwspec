@@ -88,7 +88,19 @@ hwspec ids lookup pci 8086:3e92        # resolve one ID
 
 ### Root access
 
-Most data is readable as a normal user. `--full` re-runs the capture through `pkexec`, which shows your desktop's password prompt (or a terminal prompt over SSH), to add memory modules and serial numbers from the SMBIOS table, and drive health. The output file is still written as your user. Without `--full`, the skipped items are listed under `warnings` and `privileged` is `false`.
+| Without root | With `--full` (asks via `pkexec`) |
+|---|---|
+| Everything else in the table above | + memory modules (SMBIOS), serial numbers and UUID, drive health |
+| Skipped items listed under `warnings`, `privileged: false` | File still written as your user, mode `0600` (it holds serials) |
+
+`--full` only elevates a hwspec binary that **only root can modify** (owned by root, in root-owned directories), so malware running as you can't swap it before you approve the prompt. Install accordingly:
+
+```sh
+make build && sudo make install          # /usr/local/bin/hwspec
+# or: sudo install -m755 hwspec /usr/local/bin/
+```
+
+Otherwise run `sudo hwspec capture …`; the file is then handed back to you.
 
 ## Hardware ID databases
 
